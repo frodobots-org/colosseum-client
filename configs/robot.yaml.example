@@ -1,0 +1,11 @@
+url: wss://router.example.com:8443
+token: clt_replace_with_token_from_router_ui
+
+# These IDs are the physical camera serial numbers found in RobotEnv image keys.
+cameras:
+  left_image: "24259877"
+  right_image: "24514023"
+  head_image: "13062452"
+
+# Leave empty to enter the instruction when the program starts.
+instruction: ""
