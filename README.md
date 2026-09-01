@@ -2,19 +2,6 @@
 
 Robot-side client for token-authenticated policy inference through a Colosseum Router.
 
-## Development demo
-
-Start the router and demo policy first, then run:
-
-```bash
-uv sync --extra dev
-export COLOSSEUM_CLIENT_TOKEN='clt_replace_with_at_least_24_chars'
-uv run colosseum-client-demo --router-url ws://127.0.0.1:8443
-```
-
-Production deployments must use `wss://`. Robot-specific observation acquisition,
-action validation, deadline handling and safe-stop behavior remain client responsibilities.
-
 ## DROID robot
 
 The robot runner follows an open-loop action-chunk cycle: read RobotEnv, send the
@@ -31,7 +18,7 @@ uv run colosseum-robot
 
 `configs/robot.yaml` contains the WSS URL, Client token and the DROID camera serial
 numbers assigned to `left_image`, `right_image`, and `head_image`. DROID or R2D2 must
-already be installed on the robot computer.
+already be installed on the robot computer. Production deployments must use `wss://`.
 
 For every action, the runner rejects incorrect dimensions and non-finite values,
 binarizes the final gripper value at `0.5`, and maintains the registered control rate.
