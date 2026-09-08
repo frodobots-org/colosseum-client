@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+from urllib.parse import quote
 from pathlib import Path
 import select
 import sys
@@ -144,9 +145,24 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             robot.close()
 
 
+def select_task(api, robot):
+    tasks = api.request('GET', '/tasks?robot_id=' + quote(robot, safe=''))['tasks']
+    if not tasks:
+        raise NoAssignment('No Fine-tuning tasks available for this robot')
+    print('\nAvailable Fine-tuning tasks:')
+    for index, task in enumerate(tasks, 1):
+        print(f"{index}. {task['instruction']} ({task['id']})\n   Setup: {task['setup']}")
+    while True:
+        choice = input('Select task number: ').strip()
+        if choice.isdecimal() and 1 <= int(choice) <= len(tasks):
+            return tasks[int(choice) - 1]['id']
+        print(f'Enter a number from 1 to {len(tasks)}.')
+
+
 def run_evaluation(config, *, track=None, resume=None, abort=None):
     api = EvalAPI(config)
     root = Path(config.evaluation_dir).resolve()
+    task_id = None
     try:
         if abort:
             reason = input('Reason for interrupted evaluation: ').strip()
@@ -157,6 +173,8 @@ def run_evaluation(config, *, track=None, resume=None, abort=None):
         if resume:
             assignment = api.request('GET', f'/assignments/{resume}')
             track = assignment['track']
+            if track == 'fine-tuning':
+                task_id = assignment['task']['id']
         else:
             if track is None:
                 while track not in {'open', 'fine-tuning'}:
@@ -165,12 +183,17 @@ def run_evaluation(config, *, track=None, resume=None, abort=None):
             assignment = None
         while True:
             if assignment is None:
+                if track == 'fine-tuning' and task_id is None:
+                    try:
+                        task_id = select_task(api, config.robot_type)
+                    except NoAssignment as exc:
+                        print(str(exc)); return
                 instruction = (config.instruction or input('Instruction: ').strip()) if track == 'open' else ''
                 scene = input('Scene / setup: ').strip() if track == 'open' else ''
                 try:
                     assignment = api.request('POST', '/next', {'robot_id': config.robot_type, 'track': track,
                         'instruction': instruction, 'scene': scene, 'max_steps': config.max_trial_steps,
-                        'cameras': list(config.cameras)})
+                        'cameras': list(config.cameras), **({'task_id': task_id} if track == 'fine-tuning' else {})})
                 except NoAssignment as exc:
                     print(str(exc)); return
             folder = root / assignment['id']

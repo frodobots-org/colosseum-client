@@ -114,3 +114,10 @@ this client to S3 using short-lived presigned URLs. No AWS credentials are neede
 The client computes SHA-256, uploads the bytes without forwarding its Colosseum token,
 then requests server verification. An uploaded camera is marked complete in the local
 manifest only after verification. Local storage mode continues to upload to the router.
+
+For Fine-tuning, select a predefined task from the server-provided menu after choosing
+the track. Only tasks for this robot with remaining trials (or your pending trial)
+are listed. The server selects the model; successful rounds continue on the same task.
+`--resume FT-ID` keeps the original task. Stop and start again to select another
+task; finish or abort any pending assignment before switching. This menu requires
+a router version with `GET /api/eval/tasks` and `task_id` support.

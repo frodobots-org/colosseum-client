@@ -7,13 +7,17 @@ from colosseum_client.robot_config import RobotClientConfig
 
 def test_failed_upload_resumes_without_reexecuting_or_rescoring(tmp_path, monkeypatch):
     assignment={'id':'ev_test','track':'fine-tuning','robot_id':'franka','state':'pending',
-        'task':{'instruction':'cup','setup':'start','success_criteria':'placed','partial_success_criteria':'fraction','cameras':['head_image'],'max_steps':1},
+        'task':{'id':'cup-task','instruction':'cup','setup':'start','success_criteria':'placed','partial_success_criteria':'fraction','cameras':['head_image'],'max_steps':1},
         'runs':[{'id':'run_one','side':'trial','state':'assigned'}]}
     executions=[]; submissions=[]; attempts=[]
     class API:
         def __init__(self, config): pass
         def close(self): pass
         def request(self,method,path,body=None):
+            if path.startswith('/tasks?'):
+                return {'tasks':[assignment['task']]}
+            if path == '/next':
+                assert body['task_id']=='cup-task'
             if path == '/next' and submissions:
                 raise e.NoAssignment('No trial available')
             if path.endswith('/result'):
@@ -30,7 +34,7 @@ def test_failed_upload_resumes_without_reexecuting_or_rescoring(tmp_path, monkey
     monkeypatch.setattr(e,'run_trial',run)
     monkeypatch.setattr(e.TrialRecorder,'encode',lambda p,c:{'head_image':p/'video.mp4'})
     config=RobotClientConfig(url='ws://localhost:8443',token='test',cameras={'head_image':'test'},evaluation_dir=str(tmp_path))
-    answers=iter(['','y','75'])
+    answers=iter(['1','','y','75'])
     monkeypatch.setattr('builtins.input',lambda _:next(answers))
     with pytest.raises(RuntimeError,match='network unavailable'):
         e.run_evaluation(config,track='fine-tuning')
