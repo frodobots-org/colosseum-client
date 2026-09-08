@@ -151,7 +151,7 @@ def select_task(api, robot):
         raise NoAssignment('No Fine-tuning tasks available for this robot')
     print('\nAvailable Fine-tuning tasks:')
     for index, task in enumerate(tasks, 1):
-        print(f"{index}. {task['instruction']} ({task['id']})\n   Setup: {task['setup']}")
+        print(f"{index}. {task['instruction']}")
     while True:
         choice = input('Select task number: ').strip()
         if choice.isdecimal() and 1 <= int(choice) <= len(tasks):
