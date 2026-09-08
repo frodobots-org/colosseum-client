@@ -9,3 +9,12 @@ cameras:
 
 # Leave empty to enter the instruction when the program starts.
 instruction: ""
+
+# Evaluation station identity. The implemented hardware adapter is DROID/Franka.
+robot_type: franka
+adapter: droid
+# Empty derives HTTPS/HTTP from the WSS/WS URL on the same port.
+api_url: ""
+evaluation_dir: eval_runs
+# Open Track limit; Fine-tuning limits come from the server task protocol.
+max_trial_steps: 2700

@@ -12,6 +12,11 @@ class RobotClientConfig:
     url: str
     token: str
     cameras: Mapping[str, str]
+    robot_type: str = "franka"
+    adapter: str = "droid"
+    api_url: str = ""
+    evaluation_dir: str = "eval_runs"
+    max_trial_steps: int = 2700
     instruction: str = ""
     control_hz: int = 15
     deadline_ms: int = 2000
@@ -25,6 +30,7 @@ class RobotClientConfig:
         if not isinstance(value, dict):
             raise ValueError("robot config must be a YAML mapping")
         allowed = {
+            "robot_type", "adapter", "api_url", "evaluation_dir", "max_trial_steps",
             "url",
             "token",
             "cameras",
@@ -57,6 +63,11 @@ class RobotClientConfig:
             url=value["url"],
             token=value["token"],
             cameras={name: str(camera_id) for name, camera_id in cameras.items()},
+            robot_type=value.get("robot_type", "franka"),
+            adapter=value.get("adapter", "droid"),
+            api_url=value.get("api_url", ""),
+            evaluation_dir=value.get("evaluation_dir", "eval_runs"),
+            max_trial_steps=value.get("max_trial_steps", 2700),
             instruction=value.get("instruction", ""),
             control_hz=value.get("control_hz", 15),
             deadline_ms=value.get("deadline_ms", 2000),
@@ -64,6 +75,7 @@ class RobotClientConfig:
             image_height=value.get("image_height", 288),
         )
         numbers = (
+            config.max_trial_steps,
             config.control_hz,
             config.deadline_ms,
             config.image_width,
@@ -73,4 +85,8 @@ class RobotClientConfig:
             raise ValueError("control_hz, deadline_ms, image_width, and image_height must be positive")
         if not isinstance(config.instruction, str):
             raise ValueError("instruction must be a string")
+        if not all(isinstance(v, str) and v for v in (config.robot_type, config.adapter, config.evaluation_dir)):
+            raise ValueError("robot_type, adapter and evaluation_dir must be nonempty strings")
+        if not isinstance(config.api_url, str) or (config.api_url and not config.api_url.startswith(("https://", "http://"))):
+            raise ValueError("api_url must use http:// or https://")
         return config

@@ -67,7 +67,7 @@ class ColosseumClient:
             payload=payload.SerializeToString() if payload is not None else b"",
         )
 
-    async def connect(self, *, requested_policy_id: str = "", ssl_context: ssl.SSLContext | None = None) -> pb.SessionReady:
+    async def connect(self, *, requested_policy_id: str = "", ssl_context: ssl.SSLContext | None = None, evaluation_run: str = "") -> pb.SessionReady:
         options = {
             "additional_headers": {"Authorization": f"Bearer {self.token}"},
             "compression": None,
@@ -75,6 +75,8 @@ class ColosseumClient:
             "ping_interval": 10,
             "ping_timeout": 10,
         }
+        if evaluation_run:
+            options["additional_headers"]["X-Colosseum-Run"] = evaluation_run
         if ssl_context is not None:
             options["ssl"] = ssl_context
         self.connection = await connect(self.router_url, **options)

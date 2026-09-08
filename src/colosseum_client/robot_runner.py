@@ -44,12 +44,12 @@ def protobuf_observation(
     return message
 
 
-def action_chunk(plan: pb.ActionPlan, *, control_step: int) -> np.ndarray:
+def action_chunk(plan: pb.ActionPlan, *, control_step: int, expected_dim: int = 8) -> np.ndarray:
     actions = tensor_to_numpy(plan.actions)
     if actions.ndim == 1:
         actions = actions[None, :]
-    if actions.ndim != 2 or actions.shape[0] == 0 or actions.shape[1] != 8:
-        raise ProtocolError(f"policy action chunk must have shape (horizon, 8), got {actions.shape}")
+    if actions.ndim != 2 or actions.shape[0] == 0 or actions.shape[1] != expected_dim:
+        raise ProtocolError(f"policy action chunk must have shape (horizon, {expected_dim}), got {actions.shape}")
     if not np.all(np.isfinite(actions)):
         raise ProtocolError("policy action chunk contains non-finite values")
     if plan.start_step != control_step:

@@ -24,6 +24,11 @@ class RobotObservation:
 class DroidRobot:
     """Small adapter around DROID/R2D2's RobotEnv."""
 
+    joint_count = 7
+    has_gripper = True
+    action_dim = 8
+    action_space_name = 'joint_position'
+
     def __init__(
         self,
         cameras: Mapping[str, str],
