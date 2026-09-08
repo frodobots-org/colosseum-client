@@ -1,0 +1,51 @@
+import asyncio
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from colosseum_client import evaluation as e
+from colosseum_client.robot_config import RobotClientConfig
+
+
+@pytest.mark.parametrize('fail_read', [False, True])
+def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_read):
+    events=[]
+    main_thread=threading.get_ident()
+    def record(name): events.append((name,threading.get_ident()))
+    class Robot:
+        joint_count=7; has_gripper=True; action_dim=8; action_space_name='joint_position'
+        def __init__(self,config): record('create')
+        def get_observation(self):
+            record('read')
+            if fail_read: raise RuntimeError('robot read failed')
+            return object()
+        def execute(self,action): record('execute')
+        def close(self): record('close')
+    class Client:
+        def __init__(self,*args,**kwargs): pass
+        async def connect(self,**kwargs): return SimpleNamespace(action_spaces=['joint_position'])
+        async def infer(self,*args,**kwargs): return object()
+        async def close(self): pass
+    class Recorder:
+        def __init__(self,*args): pass
+        def add(self,*args): pass
+    finished=[]
+    api=SimpleNamespace(request=lambda *args:finished.append(args))
+    monkeypatch.setattr(e,'ColosseumClient',Client)
+    monkeypatch.setattr(e,'TrialRecorder',Recorder)
+    monkeypatch.setattr(e,'protobuf_observation',lambda *a,**kw:object())
+    monkeypatch.setattr(e,'action_chunk',lambda *a,**kw:[[0]*8])
+    config=RobotClientConfig(url='ws://test',token='test',cameras={},control_hz=1000)
+    assignment={'task':{'instruction':'Close laptop','cameras':['head_image'],'max_steps':1}}
+    coro=e.run_trial(config,assignment,{'id':'run-test'},tmp_path,api,robot_factory=Robot)
+    if fail_read:
+        with pytest.raises(RuntimeError,match='robot read failed'): asyncio.run(coro)
+        assert not finished
+    else:
+        asyncio.run(coro)
+        assert any(name=='execute' for name,_ in events)
+        assert finished[0][1]=='/runs/run-test/finish'
+    assert events[0][0]=='create' and events[-1][0]=='close'
+    assert len({thread for _,thread in events})==1
+    assert events[0][1]!=main_thread

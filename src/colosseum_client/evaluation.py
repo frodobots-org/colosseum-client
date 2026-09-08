@@ -1,6 +1,9 @@
 """Interactive Open/Fine-tuning evaluation with durable upload/result recovery."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+
 import asyncio
 import base64
 import hashlib
@@ -104,45 +107,50 @@ def yes_no(label):
 
 
 async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot):
-    task = assignment['task']
-    recorder = TrialRecorder(path, task['cameras'])
-    robot = robot_factory(config)
-    client = ColosseumClient(config.url, config.token, client_id='', robot_type=config.robot_type,
-        joint_count=robot.joint_count, has_gripper=robot.has_gripper, control_hz=config.control_hz, action_spaces={robot.action_space_name: robot.action_dim})
-    step = 0
-    try:
-        metadata = await client.connect(evaluation_run=run['id'])
-        if robot.action_space_name not in metadata.action_spaces:
-            raise ProtocolError('Assigned policy does not support this robot action space')
-        print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
-        stopped = False
-        while step < task['max_steps'] and not stopped:
-            current = await asyncio.to_thread(robot.get_observation)
-            observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
-            plan = await client.infer(observation, deadline_ms=config.deadline_ms)
-            actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
-            for action in actions:
-                if step >= task['max_steps']:
-                    break
-                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
-                    sys.stdin.readline()
-                    if step > 0:
-                        stopped = True
-                        break
-                started = time.monotonic()
-                # One observation per action, including during action chunks.
-                await asyncio.to_thread(recorder.add, current, action)
-                await asyncio.to_thread(robot.execute, action)
-                step += 1
-                await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
-                current = await asyncio.to_thread(robot.get_observation)
-        await asyncio.to_thread(recorder.add, current)
-        await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
-    finally:
+    # ZeroRPC/gevent connections must be created and used on the same OS thread.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='colosseum-robot') as executor:
+        async def robot_call(function, *args):
+            return await asyncio.get_running_loop().run_in_executor(executor, partial(function, *args))
+
+        task = assignment['task']
+        recorder = TrialRecorder(path, task['cameras'])
+        robot = await robot_call(robot_factory, config)
+        client = ColosseumClient(config.url, config.token, client_id='', robot_type=config.robot_type,
+            joint_count=robot.joint_count, has_gripper=robot.has_gripper, control_hz=config.control_hz, action_spaces={robot.action_space_name: robot.action_dim})
+        step = 0
         try:
-            await client.close()
+            metadata = await client.connect(evaluation_run=run['id'])
+            if robot.action_space_name not in metadata.action_spaces:
+                raise ProtocolError('Assigned policy does not support this robot action space')
+            print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
+            stopped = False
+            while step < task['max_steps'] and not stopped:
+                current = await robot_call(robot.get_observation)
+                observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
+                plan = await client.infer(observation, deadline_ms=config.deadline_ms)
+                actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
+                for action in actions:
+                    if step >= task['max_steps']:
+                        break
+                    if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+                        sys.stdin.readline()
+                        if step > 0:
+                            stopped = True
+                            break
+                    started = time.monotonic()
+                    # One observation per action, including during action chunks.
+                    await asyncio.to_thread(recorder.add, current, action)
+                    await robot_call(robot.execute, action)
+                    step += 1
+                    await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
+                    current = await robot_call(robot.get_observation)
+            await asyncio.to_thread(recorder.add, current)
+            await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
         finally:
-            robot.close()
+            try:
+                await client.close()
+            finally:
+                await robot_call(robot.close)
 
 
 def select_task(api, robot):
