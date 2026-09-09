@@ -51,17 +51,15 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
         with pytest.raises(RuntimeError,match='robot read failed'): asyncio.run(coro)
         assert not finished
         output=capsys.readouterr().out
-        assert 'operation=get_observation:step_start event=start' in output
-        assert 'event=error elapsed_ms=' in output
-        assert "error='robot read failed' type=RuntimeError" in output
-        assert 'operation=execute' not in output
+        assert '[robot-io]' not in output
+        assert 'elapsed_ms=' not in output
     else:
         asyncio.run(coro)
         assert sum(name=='execute' for name,_ in events)==(5 if execute_action is None else 0)
         output=capsys.readouterr().out
         assert output.count('Received action chunk')==2
-        assert output.count('event=end elapsed_ms=')==(10 if execute_action is None else 5)
-        assert output.count('operation=execute event=skipped')==(0 if execute_action is None else 5)
+        assert '[robot-io]' not in output
+        assert 'elapsed_ms=' not in output
         assert '[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]' in output
         assert len(inferences)==2
         assert sum(name=='read' for name,_ in events)==6

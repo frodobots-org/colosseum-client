@@ -63,8 +63,8 @@ and print complete action chunks without executing them:
 colosseum-robot configs/robot.yaml --no-execute-action
 ```
 
-Camera reads, RobotEnv initialization and cleanup still run. Robot I/O logs include observation and execution
-start/end times, elapsed milliseconds, and errors; disabled actions log `skipped`.
+Camera reads, RobotEnv initialization and cleanup still run. Per-step robot I/O
+timing logs are disabled; exceptions still propagate to the caller.
 
 The evaluation loop reads one observation at the start of each control step and
 requests inference only when the previous action chunk is exhausted. Observation,
