@@ -18,3 +18,6 @@ api_url: ""
 evaluation_dir: eval_runs
 # Open Track limit; Fine-tuning limits come from the server task protocol.
 max_trial_steps: 2700
+
+# Per-request inference timeout, including the first request during model warm-up.
+deadline_ms: 30000

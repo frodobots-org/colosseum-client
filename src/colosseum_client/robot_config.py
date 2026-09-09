@@ -19,7 +19,7 @@ class RobotClientConfig:
     max_trial_steps: int = 2700
     instruction: str = ""
     control_hz: int = 15
-    deadline_ms: int = 2000
+    deadline_ms: int = 30000
     image_width: int = 512
     image_height: int = 288
 
@@ -70,7 +70,7 @@ class RobotClientConfig:
             max_trial_steps=value.get("max_trial_steps", 2700),
             instruction=value.get("instruction", ""),
             control_hz=value.get("control_hz", 15),
-            deadline_ms=value.get("deadline_ms", 2000),
+            deadline_ms=value.get("deadline_ms", cls.deadline_ms),
             image_width=value.get("image_width", 512),
             image_height=value.get("image_height", 288),
         )
