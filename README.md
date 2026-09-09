@@ -62,6 +62,12 @@ default. No extra flag is needed. Camera reads, recording, RobotEnv initializati
 cleanup, and evaluation scoring/uploads still run. Revert this diagnostic change to
 restore action execution.
 
+The evaluation loop reads one observation at the start of each control step and
+requests inference only when the previous action chunk is exhausted. Observation,
+inference and recording time all count toward the control period; steps that exceed
+the period do not add a sleep. Each recorded frame is the observation before its
+corresponding action, with no additional read at chunk boundaries or trial end.
+
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
 executes server-assigned A and B, then collects success/progress and preference.
 Fine-tuning obtains the predefined task and anonymous model entirely from the server;

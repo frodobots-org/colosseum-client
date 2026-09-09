@@ -8,6 +8,7 @@ import numpy as np
 from . import colosseum_pb2 as pb
 from .client import ColosseumClient, ProtocolError
 from .droid_robot import DroidRobot, RobotObservation
+from .diagnostics import read_observation, trace
 from .robot_config import RobotClientConfig
 from .tensors import tensor_from_numpy, tensor_to_numpy
 
@@ -95,7 +96,7 @@ async def run_robot(
         )
         print('Action execution disabled: receiving actions and reading cameras only.', flush=True)
         while max_control_steps is None or control_step < max_control_steps:
-            current = robot.get_observation()
+            current = read_observation(robot, control_step, 'before_inference')
             request = protobuf_observation(
                 current,
                 instruction=instruction,
@@ -110,6 +111,7 @@ async def run_robot(
                     break
                 started = time.monotonic()
                 # Temporary camera diagnostic: do not execute received actions.
+                trace(control_step, 'execute', 'skipped')
                 control_step += 1
                 remaining = period - (time.monotonic() - started)
                 if remaining > 0:

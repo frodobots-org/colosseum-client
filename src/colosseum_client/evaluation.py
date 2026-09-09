@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from .adapters import make_robot
+from .diagnostics import read_observation, trace
 from .client import ColosseumClient, ProtocolError
 from .recording import TrialRecorder
 from .robot_runner import action_chunk, protobuf_observation
@@ -124,29 +125,29 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 raise ProtocolError('Assigned policy does not support this robot action space')
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
             print('Action execution disabled: receiving actions and reading cameras only.', flush=True)
-            stopped = False
-            while step < task['max_steps'] and not stopped:
-                current = await robot_call(robot.get_observation)
-                observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
-                plan = await client.infer(observation, deadline_ms=config.deadline_ms)
-                actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
-                print(f'Received action chunk at step {step} (execution skipped):\n{actions.tolist()}', flush=True)
-                for action in actions:
-                    if step >= task['max_steps']:
+            actions = None
+            chunk_index = 0
+            while step < task['max_steps']:
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+                    sys.stdin.readline()
+                    if step > 0:
                         break
-                    if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
-                        sys.stdin.readline()
-                        if step > 0:
-                            stopped = True
-                            break
-                    started = time.monotonic()
-                    # One observation per action, including during action chunks.
-                    await asyncio.to_thread(recorder.add, current, action)
-                    # Temporary camera diagnostic: do not execute received actions.
-                    step += 1
-                    await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
-                    current = await robot_call(robot.get_observation)
-            await asyncio.to_thread(recorder.add, current)
+                started = time.monotonic()
+                current = await robot_call(read_observation, robot, step, 'step_start')
+                if actions is None or chunk_index >= len(actions):
+                    observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
+                    plan = await client.infer(observation, deadline_ms=config.deadline_ms)
+                    actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
+                    chunk_index = 0
+                    print(f'Received action chunk at step {step} (execution skipped):\n{actions.tolist()}', flush=True)
+                action = actions[chunk_index]
+                await asyncio.to_thread(recorder.add, current, action)
+                # Temporary camera diagnostic: do not execute received actions.
+                trace(step, 'execute', 'skipped')
+                chunk_index += 1
+                step += 1
+                # Include observation, inference and recording in the control period.
+                await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
             await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
         finally:
             try:
