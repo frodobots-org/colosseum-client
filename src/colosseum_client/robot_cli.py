@@ -15,12 +15,15 @@ def main() -> None:
     group.add_argument("--resume", help="Resume an assigned evaluation or pending upload/result")
     group.add_argument("--abort", help="Report an interrupted evaluation")
     parser.add_argument("--inference-only", action="store_true", help="Use the original single-policy inference loop")
+    parser.add_argument("--no-execute-action", action="store_true",
+                        help="Receive and log actions without executing them on the robot")
     args = parser.parse_args()
     config = RobotClientConfig.from_yaml(args.config)
     if not args.inference_only:
         from .evaluation import run_evaluation
         try:
-            run_evaluation(config, track=args.track, resume=args.resume, abort=args.abort)
+            run_evaluation(config, track=args.track, resume=args.resume, abort=args.abort,
+                           execute_action=not args.no_execute_action)
         except KeyboardInterrupt:
             pass
         return
@@ -28,7 +31,7 @@ def main() -> None:
     if not instruction:
         raise SystemExit("instruction cannot be empty")
     try:
-        asyncio.run(run_robot(config, instruction))
+        asyncio.run(run_robot(config, instruction, execute_action=not args.no_execute_action))
     except KeyboardInterrupt:
         pass
 

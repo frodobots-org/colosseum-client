@@ -56,17 +56,27 @@ uv sync --extra dev
 uv run colosseum-robot configs/robot.yaml
 ```
 
-Temporary camera diagnostic: both evaluation and `--inference-only` receive and
-validate actions, print each complete action chunk, and skip `robot.execute` by
-default. No extra flag is needed. Camera reads, recording, RobotEnv initialization,
-cleanup, and evaluation scoring/uploads still run. Revert this diagnostic change to
-restore action execution.
+Actions execute by default in evaluation and `--inference-only` modes. To receive
+and print complete action chunks without executing them:
+
+```bash
+colosseum-robot configs/robot.yaml --no-execute-action
+```
+
+Camera reads, RobotEnv initialization and cleanup still run. Robot I/O logs include observation and execution
+start/end times, elapsed milliseconds, and errors; disabled actions log `skipped`.
 
 The evaluation loop reads one observation at the start of each control step and
 requests inference only when the previous action chunk is exhausted. Observation,
-inference and recording time all count toward the control period; steps that exceed
-the period do not add a sleep. Each recorded frame is the observation before its
-corresponding action, with no additional read at chunk boundaries or trial end.
+inference and execution time all count toward the control period; steps that exceed
+the period do not add a sleep. There is no additional read at chunk boundaries or trial end.
+
+Recording is temporarily disabled for latency diagnostics. New trials do not create
+frame/video recordings and stop after one run without scoring or uploading videos.
+The local `recording-disabled.json` marker prevents rerunning that trial on resume;
+use the printed `--abort` command to close the diagnostic assignment. Existing
+recordings can still resume their uploads. The normal evaluation flow below applies
+when recording is restored.
 
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
 executes server-assigned A and B, then collects success/progress and preference.

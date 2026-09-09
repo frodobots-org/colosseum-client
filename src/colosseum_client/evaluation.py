@@ -19,7 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from .adapters import make_robot
-from .diagnostics import read_observation, trace
+from .diagnostics import read_observation, execute_robot_action
 from .client import ColosseumClient, ProtocolError
 from .recording import TrialRecorder
 from .robot_runner import action_chunk, protobuf_observation
@@ -107,14 +107,15 @@ def yes_no(label):
             return choice in {'y', 'yes'}
 
 
-async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot):
+async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot, execute_action=True):
     # ZeroRPC/gevent connections must be created and used on the same OS thread.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='colosseum-robot') as executor:
         async def robot_call(function, *args):
             return await asyncio.get_running_loop().run_in_executor(executor, partial(function, *args))
 
         task = assignment['task']
-        recorder = TrialRecorder(path, task['cameras'])
+        # Temporary latency diagnostic: no frame serialization or disk recording.
+        save(path / 'recording-disabled.json', {'recording_enabled': False})
         robot = await robot_call(robot_factory, config)
         client = ColosseumClient(config.url, config.token, client_id='', robot_type=config.robot_type,
             joint_count=robot.joint_count, has_gripper=robot.has_gripper, control_hz=config.control_hz, action_spaces={robot.action_space_name: robot.action_dim})
@@ -124,7 +125,8 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             if robot.action_space_name not in metadata.action_spaces:
                 raise ProtocolError('Assigned policy does not support this robot action space')
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
-            print('Action execution disabled: receiving actions and reading cameras only.', flush=True)
+            print('Recording disabled: no frames or videos will be saved.', flush=True)
+            print(f'Action execution: {"enabled" if execute_action else "disabled"}.', flush=True)
             actions = None
             chunk_index = 0
             while step < task['max_steps']:
@@ -139,14 +141,12 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     plan = await client.infer(observation, deadline_ms=config.deadline_ms)
                     actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
                     chunk_index = 0
-                    print(f'Received action chunk at step {step} (execution skipped):\n{actions.tolist()}', flush=True)
+                    print(f'Received action chunk at step {step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
                 action = actions[chunk_index]
-                await asyncio.to_thread(recorder.add, current, action)
-                # Temporary camera diagnostic: do not execute received actions.
-                trace(step, 'execute', 'skipped')
+                await robot_call(execute_robot_action, robot, action, step, execute_action)
                 chunk_index += 1
                 step += 1
-                # Include observation, inference and recording in the control period.
+                # Include observation, inference and execution in the control period.
                 await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
             await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
         finally:
@@ -170,7 +170,7 @@ def select_task(api, robot):
         print(f'Enter a number from 1 to {len(tasks)}.')
 
 
-def run_evaluation(config, *, track=None, resume=None, abort=None):
+def run_evaluation(config, *, track=None, resume=None, abort=None, execute_action=True):
     api = EvalAPI(config)
     root = Path(config.evaluation_dir).resolve()
     task_id = None
@@ -221,13 +221,20 @@ def run_evaluation(config, *, track=None, resume=None, abort=None):
                 raise ValueError('Required task cameras are missing from robot config')
             for run in assignment['runs']:
                 run_path = folder / run['id']
+                if (run_path / 'recording-disabled.json').exists():
+                    print(f"This diagnostic run has no recording; use --abort {assignment['id']} to close it.")
+                    return
                 if run['state'] == 'assigned':
                     if (run_path / 'frames.jsonl').exists():
                         raise RuntimeError('Existing recording found; inspect this interrupted run instead of overwriting it')
                     input(f"\n{run['side']}: restore the scene to its initial setup, then press Enter to start.")
-                    asyncio.run(run_trial(config, assignment, run, run_path, api))
+                    asyncio.run(run_trial(config, assignment, run, run_path, api,
+                                          execute_action=execute_action))
                 elif run['state'] != 'finished':
                     raise RuntimeError(f"Run {run['side']} was interrupted; use --abort {assignment['id']} to report it")
+                if (run_path / 'recording-disabled.json').exists():
+                    print(f"Diagnostic trial finished without recording. Skipping scoring and video uploads; use --abort {assignment['id']} to close it.")
+                    return
                 if run['side'] not in local['outcomes']:
                     local['outcomes'][run['side']] = {'success': yes_no(f"{run['side']} succeeded?"),
                         'partial_success': progress(run['side'])}

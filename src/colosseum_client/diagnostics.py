@@ -28,3 +28,11 @@ def read_observation(robot, step, phase):
     # This measures the whole RobotEnv observation call, not an individual ZED grab.
     with timed_operation(step, f"get_observation:{phase}"):
         return robot.get_observation()
+
+
+def execute_robot_action(robot, action, step, enabled=True):
+    if not enabled:
+        trace(step, "execute", "skipped")
+        return
+    with timed_operation(step, "execute"):
+        robot.execute(action)

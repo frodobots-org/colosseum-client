@@ -8,7 +8,7 @@ import numpy as np
 from . import colosseum_pb2 as pb
 from .client import ColosseumClient, ProtocolError
 from .droid_robot import DroidRobot, RobotObservation
-from .diagnostics import read_observation, trace
+from .diagnostics import read_observation, execute_robot_action
 from .robot_config import RobotClientConfig
 from .tensors import tensor_from_numpy, tensor_to_numpy
 
@@ -68,6 +68,7 @@ async def run_robot(
     *,
     robot: DroidRobot | None = None,
     max_control_steps: int | None = None,
+    execute_action: bool = True,
 ) -> None:
     robot = robot or DroidRobot(
         config.cameras,
@@ -94,7 +95,7 @@ async def run_robot(
             f"connected client={client.client_id} policy={client.policy_id} "
             f"session={client.session_id}"
         )
-        print('Action execution disabled: receiving actions and reading cameras only.', flush=True)
+        print(f'Action execution: {"enabled" if execute_action else "disabled"}.', flush=True)
         while max_control_steps is None or control_step < max_control_steps:
             current = read_observation(robot, control_step, 'before_inference')
             request = protobuf_observation(
@@ -104,14 +105,13 @@ async def run_robot(
             )
             plan = await client.infer(request, deadline_ms=config.deadline_ms)
             actions = action_chunk(plan, control_step=control_step)
-            print(f'Received action chunk at step {control_step} (execution skipped):\n{actions.tolist()}', flush=True)
+            print(f'Received action chunk at step {control_step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
 
             for action in actions:
                 if max_control_steps is not None and control_step >= max_control_steps:
                     break
                 started = time.monotonic()
-                # Temporary camera diagnostic: do not execute received actions.
-                trace(control_step, 'execute', 'skipped')
+                execute_robot_action(robot, action, control_step, execute_action)
                 control_step += 1
                 remaining = period - (time.monotonic() - started)
                 if remaining > 0:

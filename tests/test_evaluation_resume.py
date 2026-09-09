@@ -26,7 +26,7 @@ def test_failed_upload_resumes_without_reexecuting_or_rescoring(tmp_path, monkey
         def upload(self,run,camera,path):
             attempts.append(run)
             if len(attempts)==1: raise RuntimeError('network unavailable')
-    async def run(config,a,run,path,api):
+    async def run(config,a,run,path,api,*,execute_action=True):
         executions.append(run['id']); path.mkdir(parents=True)
         (path/'frames.jsonl').write_text('{}\n')
         run['state']='finished'

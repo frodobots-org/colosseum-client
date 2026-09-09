@@ -9,8 +9,9 @@ from colosseum_client import evaluation as e
 from colosseum_client.robot_config import RobotClientConfig
 
 
+@pytest.mark.parametrize('execute_action', [None, False])
 @pytest.mark.parametrize('fail_read', [False, True])
-def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_read, capsys):
+def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_read, capsys, execute_action):
     events=[]
     inferences=[]
     recordings=[]
@@ -33,7 +34,7 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
             return object()
         async def close(self): pass
     class Recorder:
-        def __init__(self,*args): pass
+        def __init__(self,*args): raise AssertionError('Recording must remain disabled')
         def add(self,*args): recordings.append(args)
     finished=[]
     api=SimpleNamespace(request=lambda *args:finished.append(args))
@@ -43,7 +44,8 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
     monkeypatch.setattr(e,'action_chunk',lambda *a,**kw:np.tile(np.arange(8, dtype=float), (3, 1)))
     config=RobotClientConfig(url='ws://test',token='test',cameras={},control_hz=1000)
     assignment={'task':{'instruction':'Close laptop','cameras':['head_image'],'max_steps':5}}
-    coro=e.run_trial(config,assignment,{'id':'run-test'},tmp_path,api,robot_factory=Robot)
+    options={} if execute_action is None else {'execute_action':execute_action}
+    coro=e.run_trial(config,assignment,{'id':'run-test'},tmp_path,api,robot_factory=Robot,**options)
     if fail_read:
         with pytest.raises(RuntimeError,match='robot read failed'): asyncio.run(coro)
         assert not finished
@@ -54,15 +56,16 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
         assert 'operation=execute' not in output
     else:
         asyncio.run(coro)
-        assert not any(name=='execute' for name,_ in events)
+        assert sum(name=='execute' for name,_ in events)==(5 if execute_action is None else 0)
         output=capsys.readouterr().out
         assert output.count('Received action chunk')==2
-        assert output.count('event=end elapsed_ms=')==5
-        assert output.count('operation=execute event=skipped')==5
+        assert output.count('event=end elapsed_ms=')==(10 if execute_action is None else 5)
+        assert output.count('operation=execute event=skipped')==(0 if execute_action is None else 5)
         assert '[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]' in output
         assert len(inferences)==2
         assert sum(name=='read' for name,_ in events)==5
-        assert len(recordings)==5
+        assert not recordings
+        assert (tmp_path/'recording-disabled.json').exists()
         assert finished[0][1]=='/runs/run-test/finish'
     assert events[0][0]=='create' and events[-1][0]=='close'
     assert len({thread for _,thread in events})==1
