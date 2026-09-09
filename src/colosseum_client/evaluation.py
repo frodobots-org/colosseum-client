@@ -123,12 +123,14 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             if robot.action_space_name not in metadata.action_spaces:
                 raise ProtocolError('Assigned policy does not support this robot action space')
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
+            print('Action execution disabled: receiving actions and reading cameras only.', flush=True)
             stopped = False
             while step < task['max_steps'] and not stopped:
                 current = await robot_call(robot.get_observation)
                 observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
                 plan = await client.infer(observation, deadline_ms=config.deadline_ms)
                 actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
+                print(f'Received action chunk at step {step} (execution skipped):\n{actions.tolist()}', flush=True)
                 for action in actions:
                     if step >= task['max_steps']:
                         break
@@ -140,7 +142,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     started = time.monotonic()
                     # One observation per action, including during action chunks.
                     await asyncio.to_thread(recorder.add, current, action)
-                    await robot_call(robot.execute, action)
+                    # Temporary camera diagnostic: do not execute received actions.
                     step += 1
                     await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
                     current = await robot_call(robot.get_observation)

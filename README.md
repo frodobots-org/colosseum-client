@@ -56,6 +56,12 @@ uv sync --extra dev
 uv run colosseum-robot configs/robot.yaml
 ```
 
+Temporary camera diagnostic: both evaluation and `--inference-only` receive and
+validate actions, print each complete action chunk, and skip `robot.execute` by
+default. No extra flag is needed. Camera reads, recording, RobotEnv initialization,
+cleanup, and evaluation scoring/uploads still run. Revert this diagnostic change to
+restore action execution.
+
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
 executes server-assigned A and B, then collects success/progress and preference.
 Fine-tuning obtains the predefined task and anonymous model entirely from the server;

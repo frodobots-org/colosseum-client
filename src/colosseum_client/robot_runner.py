@@ -93,6 +93,7 @@ async def run_robot(
             f"connected client={client.client_id} policy={client.policy_id} "
             f"session={client.session_id}"
         )
+        print('Action execution disabled: receiving actions and reading cameras only.', flush=True)
         while max_control_steps is None or control_step < max_control_steps:
             current = robot.get_observation()
             request = protobuf_observation(
@@ -102,12 +103,13 @@ async def run_robot(
             )
             plan = await client.infer(request, deadline_ms=config.deadline_ms)
             actions = action_chunk(plan, control_step=control_step)
+            print(f'Received action chunk at step {control_step} (execution skipped):\n{actions.tolist()}', flush=True)
 
             for action in actions:
                 if max_control_steps is not None and control_step >= max_control_steps:
                     break
                 started = time.monotonic()
-                robot.execute(action)
+                # Temporary camera diagnostic: do not execute received actions.
                 control_step += 1
                 remaining = period - (time.monotonic() - started)
                 if remaining > 0:
