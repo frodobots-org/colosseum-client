@@ -69,14 +69,20 @@ start/end times, elapsed milliseconds, and errors; disabled actions log `skipped
 The evaluation loop reads one observation at the start of each control step and
 requests inference only when the previous action chunk is exhausted. Observation,
 inference and execution time all count toward the control period; steps that exceed
-the period do not add a sleep. There is no additional read at chunk boundaries or trial end.
+the period do not add a sleep. There is no additional read at chunk boundaries. One final observation is recorded
+after the last action to capture the ending scene.
 
-Recording is temporarily disabled for latency diagnostics. New trials do not create
-frame/video recordings and stop after one run without scoring or uploading videos.
-The local `recording-disabled.json` marker prevents rerunning that trial on resume;
-use the printed `--abort` command to close the diagnostic assignment. Existing
-recordings can still resume their uploads. The normal evaluation flow below applies
-when recording is restored.
+Recording uses a dedicated writer thread and a bounded 32-frame queue. The control
+loop copies image/state/action buffers and enqueues them without waiting for PNG
+compression or disk writes. Capture timestamps are retained for variable-frame-rate
+video encoding. At 512×288 RGB, queued pixel data is about 13.5 MiB per camera.
+The final frame and all queued writes finish before marking the run finished,
+scoring, encoding, or uploading. A full queue or disk error interrupts the trial
+with an explicit error instead of silently dropping evidence or stalling control.
+Incomplete recordings cannot be encoded by the upload flow.
+
+Older diagnostic trials with `recording-disabled.json` still have no video; use
+`--abort` to close those assignments. Previously saved recordings can resume uploads.
 
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
 executes server-assigned A and B, then collects success/progress and preference.

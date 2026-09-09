@@ -114,18 +114,18 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             return await asyncio.get_running_loop().run_in_executor(executor, partial(function, *args))
 
         task = assignment['task']
-        # Temporary latency diagnostic: no frame serialization or disk recording.
-        save(path / 'recording-disabled.json', {'recording_enabled': False})
+        recorder = None
         robot = await robot_call(robot_factory, config)
         client = ColosseumClient(config.url, config.token, client_id='', robot_type=config.robot_type,
             joint_count=robot.joint_count, has_gripper=robot.has_gripper, control_hz=config.control_hz, action_spaces={robot.action_space_name: robot.action_dim})
         step = 0
         try:
+            recorder = TrialRecorder(path, task['cameras'])
             metadata = await client.connect(evaluation_run=run['id'])
             if robot.action_space_name not in metadata.action_spaces:
                 raise ProtocolError('Assigned policy does not support this robot action space')
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
-            print('Recording disabled: no frames or videos will be saved.', flush=True)
+            print('Recording enabled: frames are written by a background worker.', flush=True)
             print(f'Action execution: {"enabled" if execute_action else "disabled"}.', flush=True)
             actions = None
             chunk_index = 0
@@ -136,6 +136,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                         break
                 started = time.monotonic()
                 current = await robot_call(read_observation, robot, step, 'step_start')
+                captured_at = time.monotonic()
                 if actions is None or chunk_index >= len(actions):
                     observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
                     plan = await client.infer(observation, deadline_ms=config.deadline_ms)
@@ -143,17 +144,26 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     chunk_index = 0
                     print(f'Received action chunk at step {step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
                 action = actions[chunk_index]
+                recorder.add(current, action, captured_at=captured_at)
                 await robot_call(execute_robot_action, robot, action, step, execute_action)
                 chunk_index += 1
                 step += 1
                 # Include observation, inference and execution in the control period.
                 await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
+            final_observation = await robot_call(robot.get_observation)
+            recorder.add(final_observation)
+            print('Finishing recording...', flush=True)
+            await asyncio.to_thread(recorder.close)
             await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
         finally:
             try:
                 await client.close()
             finally:
-                await robot_call(robot.close)
+                try:
+                    await robot_call(robot.close)
+                finally:
+                    if recorder is not None:
+                        await asyncio.to_thread(recorder.close)
 
 
 def select_task(api, robot):

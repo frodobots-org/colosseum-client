@@ -34,8 +34,9 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
             return object()
         async def close(self): pass
     class Recorder:
-        def __init__(self,*args): raise AssertionError('Recording must remain disabled')
-        def add(self,*args): recordings.append(args)
+        def __init__(self,*args): pass
+        def add(self,*args,**kwargs): recordings.append(args)
+        def close(self): pass
     finished=[]
     api=SimpleNamespace(request=lambda *args:finished.append(args))
     monkeypatch.setattr(e,'ColosseumClient',Client)
@@ -63,9 +64,9 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
         assert output.count('operation=execute event=skipped')==(0 if execute_action is None else 5)
         assert '[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]' in output
         assert len(inferences)==2
-        assert sum(name=='read' for name,_ in events)==5
-        assert not recordings
-        assert (tmp_path/'recording-disabled.json').exists()
+        assert sum(name=='read' for name,_ in events)==6
+        assert len(recordings)==6
+        assert not (tmp_path/'recording-disabled.json').exists()
         assert finished[0][1]=='/runs/run-test/finish'
     assert events[0][0]=='create' and events[-1][0]=='close'
     assert len({thread for _,thread in events})==1
