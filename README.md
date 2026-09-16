@@ -1,3 +1,29 @@
+## Test data with a real robot identity
+
+```yaml
+robot_type: franka # or yam
+test: true        # dummy data/actions; false uses the hardware adapter
+track: 1          # 1 Open, 2 Fine-tuning
+```
+
+`test` must be a YAML boolean. The normal Client command and evaluation workflow
+are shared. Dummy local action dimensions follow the Router-assigned model contract;
+this is a transport fixture, not a validated YAM hardware interface. Model loading
+is still simulated by `colosseum-policy-verify`.
+
+Router persists an immutable test flag per assignment, exposes it in Open and
+Fine-tuning reviews, and excludes synthetic results from formal ranking, difficulty
+fitting and Fine-tuning summaries. Test attempts do not consume formal trial quotas.
+Test-only deployments are unavailable to `test: false` clients. Ready messages for
+simulation cannot start an assignment marked real. Changing mode during a pending
+assignment requires completing or aborting that assignment first.
+
+Web review is available at `/web/evals` on the Router, with Test badges under
+the original robot identity. Historical `robot_type: test` records are retained,
+but Legacy test is no longer offered in the robot selector.
+The old robot_type test syntax remains accepted for compatibility. New configs
+should always use a real robot_type with a separate test flag.
+
 # Colosseum Client
 
 Robot-side client for token-authenticated policy inference through a Colosseum Router.
@@ -13,12 +39,18 @@ the action uses 7 joint values followed by one gripper value.
 uv sync
 cp configs/robot.yaml.example configs/robot.yaml
 chmod 600 configs/robot.yaml
-uv run colosseum-robot --inference-only
+# Edit token and institution before running.
+uv run colosseum-robot configs/robot.yaml
 ```
 
-`configs/robot.yaml` contains the WSS URL, Client token and the DROID camera serial
-numbers assigned to `left_image`, `right_image`, and `head_image`. DROID or R2D2 must
-already be installed on the robot computer. Production deployments must use `wss://`.
+The example defaults to Franka with dummy data (`test: true`) and a local Policy
+Server at `ws://localhost:8000`. Start `uv run colosseum-policy-verify` in the
+Policy Server project first. Set the Client token and matching Institution.
+
+For real DROID/Franka hardware, set `test: false`, configure camera serial numbers
+for `left_image`, `right_image`, and `head_image`, and use a real inference server.
+DROID or R2D2 must already be installed on the robot computer. Production
+deployments must use `wss://`.
 
 For every action, the runner rejects incorrect dimensions and non-finite values,
 binarizes the final gripper value at `0.5`, and maintains the registered control rate.
@@ -85,7 +117,10 @@ Older diagnostic trials with `recording-disabled.json` still have no video; use
 `--abort` to close those assignments. Previously saved recordings can resume uploads.
 
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
-executes server-assigned A and B, then collects success/progress and preference.
+executes server-assigned A, asks for its partial success (0–100), then prompts to
+restore the scene and execute B. After B partial success, select A/B/tie and enter
+optional feedback. For Open Track, 100% maps to success; lower values map to not
+fully successful in the stored result. No separate success/failure prompt is shown.
 Fine-tuning obtains the predefined task and anonymous model entirely from the server;
 the operator confirms scene setup, runs a trial, and records success/failure and
 partial success (0–100). Fine-tuning automatically requests the next assignment;
@@ -149,3 +184,134 @@ are listed. The server selects the model; successful rounds continue on the same
 `--resume FT-ID` keeps the original task. Stop and start again to select another
 task; finish or abort any pending assignment before switching. This menu requires
 a router version with `GET /api/eval/tasks` and `task_id` support.
+
+## Configured evaluation and local inference
+
+`configs/robot.yaml.example` now includes:
+
+```yaml
+router_url: wss://router.example.com
+token: clt_replace_me
+scene: kitchen_01
+evaluator: operator_01
+track: 1 # 1 = Open, 2 = Fine-tuning
+policy_server_url: null # or wss://local-policy.example.com:8000
+```
+
+Keep the existing `cameras`, `robot_type`, adapter and control settings in that same
+file. `url` remains a supported alias for `router_url`; conflicting values are rejected.
+`--track` overrides config; resume uses the saved assignment's track and metadata.
+With track and scene set, Open asks only for the instruction before setup confirmation;
+Fine-tuning asks for the task. Scoring remains interactive. Scene/evaluator are saved
+on Router and in the local assignment manifest; evaluator text does not replace token
+ownership. The Router must be upgraded alongside Client for the new request fields.
+
+With `policy_server_url` set, Client queries supported runtime profiles over WS(S),
+then Router chooses the model. Client receives its HF link and pinned revision from
+Router and prepares the model through the local WS connection. Observations/actions
+travel directly to the local service. Recordings start after readiness, and each
+new Trial must reset local model state. Local inference requires evaluation mode;
+`--inference-only` with a local URL is rejected.
+
+Run `uv run colosseum-robot configs/robot.yaml`. Existing remote inference remains
+available by omitting the local URL. Model loading timeout defaults to 1800 seconds
+and can be shortened with `prepare_timeout`. WSS verifies server certificates normally.
+The Router token is sent only to Router. This version has no local token setting.
+
+The local server must implement [Local inference protocol v1](../colosseum-router/docs/local-policy.md).
+The existing Policy Server outbound SDK does not yet implement this inbound protocol.
+Client/Router are implemented and mock-tested; a real model-serving implementation
+and hardware validation are still needed. Each action currently waits for a Router
+control acknowledgment, so WAN latency can limit the control rate.
+
+### Verify WSS model delivery without a robot
+
+```bash
+.venv/bin/python -m colosseum_client.local_check configs/robot.yaml
+```
+
+This uses binary Protobuf through WSS, checks the receipt from the verification-only
+Policy Server, and leaves the assignment unexecuted. See
+[verification setup](../colosseum-policy-server/docs/local-verification.md).
+
+### Robot type and a hardware-free local test
+
+Set `robot_type: franka` or `robot_type: yam`. The type is passed to Router for task
+and deployment selection. Omitted adapter defaults to `droid` for Franka and `yam`
+for YAM; the YAM hardware adapter is not yet installed. Receipt-only WSS verification
+supports either type without instantiating any robot or assuming its action dimensions.
+Legacy `robot_type: DROID` remains accepted.
+
+From the workspace root, run the automated local test:
+
+```bash
+colosseum-router/.venv/bin/python colosseum-router/scripts/run_local_verification.py --robot-type yam
+```
+
+Use `--robot-type franka` for Franka. The script starts isolated Router, TLS Policy
+Server and Client, registers synthetic task/model data, checks Protobuf delivery,
+and shuts everything down. No hardware, GPU, internet download or inference is used.
+The three existing development virtual environments and `openssl` are required.
+Config, receipt and verification summary paths are printed under a fresh `/tmp`
+directory. YAM model URL/action dimensions are synthetic transport fixtures, not a
+real YAM model or hardware specification.
+
+### Test robot adapter
+
+All robot types use the same evaluation entry point:
+
+```bash
+uv run colosseum-robot configs/robot.yaml
+```
+
+`robot_type: test` selects a dummy data/action adapter. It generates RGB and state,
+and applies returned actions in memory. Without camera configuration it provides
+`head_image`. It uses the same recording, scoring, upload, resume and result flow as
+physical robots. `track: 1` runs A then B with partial success and preference;
+`track: 2` selects a Router task and runs Fine-tuning evaluation.
+
+Start `uv run colosseum-policy-verify` in Policy Server for simulated model preparation
+and actions. Use `policy_server_url: ws://localhost:8000`. Restart the server after
+updating. Router records these evaluations under `robot_id: test`; scores and videos
+are submitted normally, so filter by robot when viewing results. No hardware executes.
+Open Track duration uses `max_trial_steps` (the prepared test config sets 3);
+Fine-tuning uses the Router task limit. Enter can finish a trial early.
+
+The separate `python -m colosseum_client.local_check` command remains an explicit
+receipt-only diagnostic and is not the normal Client entry point.
+
+### Complete local A/B test (no hardware)
+
+From `colosseum-router`:
+
+```bash
+uv run python scripts/run_ab_eval.py
+```
+
+Requires the sibling Client development environment and Router test dependencies.
+The command launches an isolated Router and mock Policy Server, invokes the actual
+Client evaluation workflow with a fake robot, and supplies the operator responses
+automatically: A=75%, B=100%, preference=B. It verifies preparation before observations,
+different A/B revisions, action reporting, actual MP4 uploads, persisted scores and
+idempotent result submission. Services stop automatically; the printed artifact
+folder retains the database, prompts, model events, recordings and summary.
+No cloud scores or real robot actions are generated.
+
+For real local inference, Policy Server `ready` directly enables Client evaluation.
+Router start/step acknowledgments are handled in the background. Completion waits
+for Router to persist the trial before scoring and switching models. Real model loading/inference still requires
+a Policy Server implementation that emits `ready` after loading the assigned model.
+
+### Institution binding
+
+Set `institution` to the exact value registered for your Client token in Router's
+`/admin` token manager. Evaluation requests (including resume/uploads and the
+inference control connection) carry this value; Router rejects unbound tokens,
+missing values and mismatches. Whitespace around the value is trimmed, but case is
+preserved. The stored evaluation institution comes from the token binding.
+
+Every Client token has an Institution. The admin form uses a single Institution
+field; new tokens bind it automatically. Existing unbound tokens are migrated using
+their original names, while existing bindings are preserved.
+To change an existing binding, create a new token. Never infer institution from the
+operator-provided scene or evaluator name.

@@ -24,3 +24,28 @@ def test_empty_task_list_does_not_create_evaluation(tmp_path,monkeypatch):
     monkeypatch.setattr(e,'EvalAPI',API)
     monkeypatch.setattr('builtins.input',lambda _:pytest.fail('No prompt for empty task list'))
     e.run_evaluation(RobotClientConfig(url='ws://localhost',token='test',cameras={},evaluation_dir=str(tmp_path)),track='fine-tuning')
+
+
+@pytest.mark.parametrize('track', ['open', 'fine-tuning'])
+def test_config_skips_track_scene_prompts_and_sends_metadata(tmp_path, monkeypatch, track):
+    sent = []
+    class API:
+        def __init__(self, config): pass
+        def close(self): pass
+        def request(self, method, path, body=None):
+            if path.startswith('/tasks?'):
+                return {'tasks':[{'id':'task-1','instruction':'Move cup'}]}
+            sent.append(body)
+            raise e.NoAssignment('No trial available')
+    monkeypatch.setattr(e, 'EvalAPI', API)
+    questions = []
+    def answer(prompt):
+        questions.append(prompt)
+        return 'Move cup' if track == 'open' else '1'
+    monkeypatch.setattr('builtins.input', answer)
+    config = RobotClientConfig(url='ws://localhost', token='test', cameras={'head_image':'1'},
+        scene='kitchen', evaluator='operator-1', track=track, evaluation_dir=str(tmp_path))
+    e.run_evaluation(config)
+    assert len(questions) == 1
+    assert sent[0]['scene'] == 'kitchen' and sent[0]['evaluator'] == 'operator-1'
+    assert sent[0]['track'] == track

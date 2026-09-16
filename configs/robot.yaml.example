@@ -1,23 +1,30 @@
-url: wss://router.example.com:8443
+# Copy to robot.yaml and fill in your Client Token and its bound Institution.
+router_url: wss://191.222.219.43
 token: clt_replace_with_token_from_router_ui
+institution: test # Must match the Institution bound to this token
 
-# These IDs are the physical camera serial numbers found in RobotEnv image keys.
-cameras:
-  left_image: "24259877"
-  right_image: "24514023"
-  head_image: "13062452"
+robot_type: franka # franka or yam
+test: true # true = dummy data; false = real robot data
+policy_server_url: ws://localhost:8000 # Local Policy Server; null = remote inference
+track: 1 # 1 = Open, 2 = Fine-tuning
+scene: office
+evaluator: local-tester
 
-# Leave empty to enter the instruction when the program starts.
+# Leave empty to enter the prompt at startup (Open) or select a task (Fine-tuning).
 instruction: ""
+max_trial_steps: 3 # Open Track limit; Fine-tuning uses the Router task limit
+prepare_timeout: 1800 # Model download, loading and warm-up timeout in seconds
+deadline_ms: 30000 # Per-request inference timeout in milliseconds
 
-# Evaluation station identity. The implemented hardware adapter is DROID/Franka.
-robot_type: franka
-adapter: droid
-# Empty derives HTTPS/HTTP from the WSS/WS URL on the same port.
-api_url: ""
-evaluation_dir: eval_runs
-# Open Track limit; Fine-tuning limits come from the server task protocol.
-max_trial_steps: 2700
+# Dummy data needs no physical cameras.
+# For real DROID/Franka, set test: false and replace this with your camera IDs:
+# cameras:
+#   left_image: "YOUR_LEFT_CAMERA_ID"
+#   right_image: "YOUR_RIGHT_CAMERA_ID"
+#   head_image: "YOUR_HEAD_CAMERA_ID"
+cameras: {}
 
-# Per-request inference timeout, including the first request during model warm-up.
-deadline_ms: 30000
+# Optional settings:
+# api_url: "" # Derived from router_url when empty
+# evaluation_dir: eval_runs
+# adapter: droid # Defaults to droid for franka, yam for yam

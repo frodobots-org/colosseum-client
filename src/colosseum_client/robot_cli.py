@@ -19,6 +19,8 @@ def main() -> None:
                         help="Receive and log actions without executing them on the robot")
     args = parser.parse_args()
     config = RobotClientConfig.from_yaml(args.config)
+    if args.inference_only and config.policy_server_url:
+        raise SystemExit("policy_server_url requires evaluation mode so Router can assign the model")
     if not args.inference_only:
         from .evaluation import run_evaluation
         try:

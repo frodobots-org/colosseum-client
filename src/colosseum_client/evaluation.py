@@ -13,6 +13,7 @@ from urllib.parse import quote
 from pathlib import Path
 import select
 import sys
+import ssl
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -37,7 +38,7 @@ class NoAssignment(RuntimeError):
 class EvalAPI:
     def __init__(self, config):
         self.client = httpx.Client(base_url=api_url(config).rstrip('/'),
-            headers={'Authorization': f'Bearer {config.token}'}, timeout=30, trust_env=False)
+            headers={'Authorization': f'Bearer {config.token}', 'X-Colosseum-Institution': quote(config.institution.strip(),safe='')}, timeout=30, trust_env=False, verify=ssl.create_default_context())
 
     def request(self, method, path, body=None):
         response = self.client.request(method, '/api/eval' + path, json=body)
@@ -116,14 +117,25 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
         task = assignment['task']
         recorder = None
         robot = await robot_call(robot_factory, config)
-        client = ColosseumClient(config.url, config.token, client_id='', robot_type=config.robot_type,
-            joint_count=robot.joint_count, has_gripper=robot.has_gripper, control_hz=config.control_hz, action_spaces={robot.action_space_name: robot.action_dim})
+        local_mode = assignment.get('inference_mode', 'remote') == 'local'
+        client_options = dict(robot_type=config.robot_type, joint_count=robot.joint_count,
+            has_gripper=robot.has_gripper, control_hz=config.control_hz,
+            action_spaces={robot.action_space_name: robot.action_dim})
+        if local_mode:
+            from .local_policy import LocalPolicyClient
+            client = LocalPolicyClient(config, api_url(config), **client_options)
+        else:
+            client = ColosseumClient(config.url, config.token, client_id='', **client_options)
         step = 0
         try:
-            recorder = TrialRecorder(path, task['cameras'])
-            metadata = await client.connect(evaluation_run=run['id'])
+            metadata = await client.connect(evaluation_run=run['id'], institution=config.institution)
+            if config.test and local_mode:
+                await robot_call(robot.configure_model, client.model)
             if robot.action_space_name not in metadata.action_spaces:
                 raise ProtocolError('Assigned policy does not support this robot action space')
+            if local_mode:
+                save(path / 'policy.json', {'run_id': run['id'], 'model': client.model})
+            recorder = TrialRecorder(path, task['cameras'])
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
             print('Recording enabled: frames are written by a background worker.', flush=True)
             print(f'Action execution: {"enabled" if execute_action else "disabled"}.', flush=True)
@@ -145,6 +157,8 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     print(f'Received action chunk at step {step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
                 action = actions[chunk_index]
                 recorder.add(current, action, captured_at=captured_at)
+                if local_mode:
+                    await client.before_action(step)
                 await robot_call(execute_robot_action, robot, action, step, execute_action)
                 chunk_index += 1
                 step += 1
@@ -154,7 +168,10 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             recorder.add(final_observation)
             print('Finishing recording...', flush=True)
             await asyncio.to_thread(recorder.close)
-            await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
+            if local_mode:
+                await client.finish()
+            else:
+                await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
         finally:
             try:
                 await client.close()
@@ -166,8 +183,8 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                         await asyncio.to_thread(recorder.close)
 
 
-def select_task(api, robot):
-    tasks = api.request('GET', '/tasks?robot_id=' + quote(robot, safe=''))['tasks']
+def select_task(api, robot, test=False):
+    tasks = api.request('GET', '/tasks?robot_id=' + quote(robot, safe='') + ('&test=true' if test else ''))['tasks']
     if not tasks:
         raise NoAssignment('No Fine-tuning tasks available for this robot')
     print('\nAvailable Fine-tuning tasks:')
@@ -181,6 +198,7 @@ def select_task(api, robot):
 
 
 def run_evaluation(config, *, track=None, resume=None, abort=None, execute_action=True):
+    track = track or config.track or None
     api = EvalAPI(config)
     root = Path(config.evaluation_dir).resolve()
     task_id = None
@@ -206,23 +224,33 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
             if assignment is None:
                 if track == 'fine-tuning' and task_id is None:
                     try:
-                        task_id = select_task(api, config.robot_type)
+                        task_id = select_task(api, config.robot_type, config.test)
                     except NoAssignment as exc:
                         print(str(exc)); return
                 instruction = (config.instruction or input('Instruction: ').strip()) if track == 'open' else ''
-                scene = input('Scene / setup: ').strip() if track == 'open' else ''
+                scene = config.scene or (input('Scene / setup: ').strip() if track == 'open' else '')
+                mode = 'local' if config.policy_server_url else 'remote'
+                profiles = []
+                if mode == 'local':
+                    from .local_policy import capabilities
+                    profiles = asyncio.run(capabilities(config.policy_server_url))
                 try:
                     assignment = api.request('POST', '/next', {'robot_id': config.robot_type, 'track': track,
-                        'instruction': instruction, 'scene': scene, 'max_steps': config.max_trial_steps,
+                        'instruction': instruction, 'scene': scene, 'evaluator': config.evaluator, 'institution': config.institution.strip(),
+                        'inference_mode': mode, 'runtime_profiles': profiles, 'test': config.test, 'max_steps': config.max_trial_steps,
                         'cameras': list(config.cameras), **({'task_id': task_id} if track == 'fine-tuning' else {})})
                 except NoAssignment as exc:
                     print(str(exc)); return
+            if bool(assignment.get('test', False)) != config.test:
+                raise ValueError('Assignment test flag differs from config; finish or abort before switching')
+            if assignment.get('inference_mode', 'remote') == 'local' and not config.policy_server_url:
+                raise ValueError('This assignment requires policy_server_url in the config')
             folder = root / assignment['id']
             manifest = folder / 'manifest.json'
             local = json.loads(manifest.read_text()) if manifest.exists() else {'assignment': assignment, 'outcomes': {}, 'uploaded': []}
             save(manifest, local)
             task = assignment['task']
-            print(f"\nEvaluation {assignment['id']} ({track})\nTask: {task['instruction']}\nSetup: {task['setup']}\nSuccess: {task['success_criteria']}\nPartial success: {task['partial_success_criteria']}")
+            print(f"\nTask: {task['instruction']}")
             if assignment['state'] == 'completed':
                 print('Already submitted.'); return
             if assignment['state'] != 'pending':
@@ -246,8 +274,12 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     print(f"Diagnostic trial finished without recording. Skipping scoring and video uploads; use --abort {assignment['id']} to close it.")
                     return
                 if run['side'] not in local['outcomes']:
-                    local['outcomes'][run['side']] = {'success': yes_no(f"{run['side']} succeeded?"),
-                        'partial_success': progress(run['side'])}
+                    if track == 'open':
+                        partial = progress(run['side'])
+                        local['outcomes'][run['side']] = {'success': partial == 1.0, 'partial_success': partial}
+                    else:
+                        local['outcomes'][run['side']] = {'success': yes_no(f"{run['side']} succeeded?"),
+                            'partial_success': progress(run['side'])}
                     save(manifest, local)
                 if not all(f"{run['id']}/{c}" in local['uploaded'] for c in task['cameras']):
                     videos = TrialRecorder.encode(run_path, task['cameras'])

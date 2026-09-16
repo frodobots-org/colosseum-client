@@ -11,7 +11,7 @@ dependencies = [
   "numpy>=1.26",
   "httpx>=0.27,<1",
   "Pillow>=10,<12",
-  "protobuf>=5,<7",
+  "protobuf>=6.33.5,<7",
   "PyYAML>=6,<7",
   "websockets>=15,<16",
 ]
