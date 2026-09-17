@@ -12,6 +12,7 @@ evaluator: local-tester
 
 # Leave empty to enter the prompt at startup (Open) or select a task (Fine-tuning).
 instruction: ""
+recording: true # Save LeRobot locally; upload after the evaluation
 max_trial_steps: 3 # Open Track limit; Fine-tuning uses the Router task limit
 prepare_timeout: 1800 # Model download, loading and warm-up timeout in seconds
 deadline_ms: 30000 # Per-request inference timeout in milliseconds

@@ -9,9 +9,10 @@ from colosseum_client import evaluation as e
 from colosseum_client.robot_config import RobotClientConfig
 
 
+@pytest.mark.parametrize('recording', [True, False])
 @pytest.mark.parametrize('execute_action', [None, False])
 @pytest.mark.parametrize('fail_read', [False, True])
-def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_read, capsys, execute_action):
+def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_read, capsys, execute_action, recording):
     events=[]
     inferences=[]
     recordings=[]
@@ -34,7 +35,8 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
             return object()
         async def close(self): pass
     class Recorder:
-        def __init__(self,*args): pass
+        def __init__(self,*args):
+            assert recording
         def add(self,*args,**kwargs): recordings.append(args)
         def close(self): pass
     finished=[]
@@ -43,7 +45,7 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
     monkeypatch.setattr(e,'TrialRecorder',Recorder)
     monkeypatch.setattr(e,'protobuf_observation',lambda *a,**kw:object())
     monkeypatch.setattr(e,'action_chunk',lambda *a,**kw:np.tile(np.arange(8, dtype=float), (3, 1)))
-    config=RobotClientConfig(url='ws://test',token='test',cameras={},control_hz=1000)
+    config=RobotClientConfig(url='ws://test',token='test',cameras={},control_hz=1000,recording=recording)
     assignment={'task':{'instruction':'Close laptop','cameras':['head_image'],'max_steps':5}}
     options={} if execute_action is None else {'execute_action':execute_action}
     coro=e.run_trial(config,assignment,{'id':'run-test'},tmp_path,api,robot_factory=Robot,**options)
@@ -62,8 +64,9 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
         assert 'elapsed_ms=' not in output
         assert '[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]' in output
         assert len(inferences)==2
-        assert sum(name=='read' for name,_ in events)==6
-        assert len(recordings)==6
+        assert sum(name=='read' for name,_ in events)==(6 if recording else 5)
+        assert len(recordings)==(6 if recording else 0)
+        assert (tmp_path/'recording-context.json').exists() == recording
         assert not (tmp_path/'recording-disabled.json').exists()
         assert finished[0][1]=='/runs/run-test/finish'
     assert events[0][0]=='create' and events[-1][0]=='close'

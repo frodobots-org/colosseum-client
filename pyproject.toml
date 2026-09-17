@@ -14,6 +14,7 @@ dependencies = [
   "protobuf>=6.33.5,<7",
   "PyYAML>=6,<7",
   "websockets>=15,<16",
+  "pyarrow>=18,<26",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ dev = ["grpcio-tools>=1.66", "pytest>=8", "pytest-asyncio>=0.24"]
 [project.scripts]
 colosseum-client-demo = "colosseum_client.cli:main"
 colosseum-robot = "colosseum_client.robot_cli:main"
+colosseum-upload-dataset = "colosseum_client.dataset_upload:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

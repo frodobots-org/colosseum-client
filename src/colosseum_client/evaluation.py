@@ -75,6 +75,41 @@ class EvalAPI:
         else:
             raise RuntimeError('Unknown video storage mode')
 
+    def upload_dataset(self, run_id, root):
+        root = Path(root)
+        files = []
+        for path in sorted(root.rglob('*')):
+            if path.is_file():
+                with path.open('rb') as source:
+                    checksum = base64.b64encode(hashlib.file_digest(source, 'sha256').digest()).decode()
+                files.append({'path': path.relative_to(root).as_posix(),
+                              'size': path.stat().st_size, 'checksum_sha256': checksum})
+        route = f'/runs/{run_id}/dataset'
+        self.request('POST', route, {'files': files})
+        for index, file in enumerate(files, 1):
+            query = '?path=' + quote(file['path'], safe='')
+            target = self.request('POST', route + '/upload-url' + query)
+            if target.get('complete'):
+                continue
+            path = root / file['path']
+            print(f"Uploading dataset {index}/{len(files)}: {file['path']}", flush=True)
+            if target['storage'] == 's3':
+                with httpx.Client(timeout=600, trust_env=False) as upload_client, path.open('rb') as source:
+                    try:
+                        response = upload_client.put(target['url'], content=source, headers=target['headers'])
+                    except httpx.HTTPError:
+                        raise RuntimeError('Dataset S3 connection failed; resume to retry') from None
+                if response.status_code not in {200, 201, 204, 412}:
+                    raise RuntimeError(f'Dataset S3 upload failed ({response.status_code}); resume to retry')
+            elif target['storage'] == 'local':
+                with path.open('rb') as source:
+                    response = self.client.put('/api/eval' + route + '/file' + query, content=source,
+                                               headers={'Content-Type': 'application/octet-stream'}, timeout=600)
+                response.raise_for_status()
+            else:
+                raise RuntimeError('Unknown dataset storage mode')
+        self.request('POST', route + '/complete')
+
     def close(self):
         self.client.close()
 
@@ -135,9 +170,15 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 raise ProtocolError('Assigned policy does not support this robot action space')
             if local_mode:
                 save(path / 'policy.json', {'run_id': run['id'], 'model': client.model})
-            recorder = TrialRecorder(path, task['cameras'])
+            if config.recording:
+                save(path / 'recording-context.json', {
+                    'robot_type': config.robot_type, 'fps': config.control_hz,
+                    'action_space': robot.action_space_name,
+                    'execution_enabled': execute_action, 'test': config.test})
+                recorder = TrialRecorder(path, task['cameras'])
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
-            print('Recording enabled: frames are written by a background worker.', flush=True)
+            print('Recording enabled: frames are written by a background worker.' if recorder is not None
+                  else 'Recording disabled.', flush=True)
             print(f'Action execution: {"enabled" if execute_action else "disabled"}.', flush=True)
             actions = None
             chunk_index = 0
@@ -156,7 +197,8 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     chunk_index = 0
                     print(f'Received action chunk at step {step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
                 action = actions[chunk_index]
-                recorder.add(current, action, captured_at=captured_at)
+                if recorder is not None:
+                    recorder.add(current, action, captured_at=captured_at)
                 if local_mode:
                     await client.before_action(step)
                 await robot_call(execute_robot_action, robot, action, step, execute_action)
@@ -164,10 +206,11 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 step += 1
                 # Include observation, inference and execution in the control period.
                 await asyncio.sleep(max(0, 1/config.control_hz - (time.monotonic() - started)))
-            final_observation = await robot_call(robot.get_observation)
-            recorder.add(final_observation)
-            print('Finishing recording...', flush=True)
-            await asyncio.to_thread(recorder.close)
+            if recorder is not None:
+                final_observation = await robot_call(robot.get_observation)
+                recorder.add(final_observation)
+                print('Finishing recording...', flush=True)
+                await asyncio.to_thread(recorder.close)
             if local_mode:
                 await client.finish()
             else:
@@ -215,6 +258,9 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
             if track == 'fine-tuning':
                 task_id = assignment['task']['id']
         else:
+            previous = api.request('POST', '/reset')
+            if previous.get('discarded'):
+                print('Previous incomplete evaluation closed. Starting a new evaluation.')
             if track is None:
                 while track not in {'open', 'fine-tuning'}:
                     value = input('Evaluation track [1: Open / 2: Fine-tuning]: ').strip().lower()
@@ -237,10 +283,12 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                 try:
                     assignment = api.request('POST', '/next', {'robot_id': config.robot_type, 'track': track,
                         'instruction': instruction, 'scene': scene, 'evaluator': config.evaluator, 'institution': config.institution.strip(),
-                        'inference_mode': mode, 'runtime_profiles': profiles, 'test': config.test, 'max_steps': config.max_trial_steps,
+                        'inference_mode': mode, 'runtime_profiles': profiles, 'test': config.test, 'recording': config.recording, 'max_steps': config.max_trial_steps,
                         'cameras': list(config.cameras), **({'task_id': task_id} if track == 'fine-tuning' else {})})
                 except NoAssignment as exc:
                     print(str(exc)); return
+            if bool(assignment.get('recording', True)) != config.recording:
+                raise ValueError('Assignment recording flag differs from config; restore the original setting to resume')
             if bool(assignment.get('test', False)) != config.test:
                 raise ValueError('Assignment test flag differs from config; finish or abort before switching')
             if assignment.get('inference_mode', 'remote') == 'local' and not config.policy_server_url:
@@ -260,8 +308,7 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
             for run in assignment['runs']:
                 run_path = folder / run['id']
                 if (run_path / 'recording-disabled.json').exists():
-                    print(f"This diagnostic run has no recording; use --abort {assignment['id']} to close it.")
-                    return
+                    raise RuntimeError('This older diagnostic run cannot be resumed; restart the client for a new evaluation')
                 if run['state'] == 'assigned':
                     if (run_path / 'frames.jsonl').exists():
                         raise RuntimeError('Existing recording found; inspect this interrupted run instead of overwriting it')
@@ -269,10 +316,9 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     asyncio.run(run_trial(config, assignment, run, run_path, api,
                                           execute_action=execute_action))
                 elif run['state'] != 'finished':
-                    raise RuntimeError(f"Run {run['side']} was interrupted; use --abort {assignment['id']} to report it")
+                    raise RuntimeError(f"Run {run['side']} was interrupted; restart the client for a new evaluation")
                 if (run_path / 'recording-disabled.json').exists():
-                    print(f"Diagnostic trial finished without recording. Skipping scoring and video uploads; use --abort {assignment['id']} to close it.")
-                    return
+                    raise RuntimeError('This diagnostic run cannot be submitted; restart the client for a new evaluation')
                 if run['side'] not in local['outcomes']:
                     if track == 'open':
                         partial = progress(run['side'])
@@ -281,13 +327,23 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                         local['outcomes'][run['side']] = {'success': yes_no(f"{run['side']} succeeded?"),
                             'partial_success': progress(run['side'])}
                     save(manifest, local)
-                if not all(f"{run['id']}/{c}" in local['uploaded'] for c in task['cameras']):
-                    videos = TrialRecorder.encode(run_path, task['cameras'])
-                    for camera, path in videos.items():
-                        key = f"{run['id']}/{camera}"
-                        if key not in local['uploaded']:
-                            api.upload(run['id'], camera, path)
-                            local['uploaded'].append(key); save(manifest, local)
+                if config.recording:
+                    from .lerobot_export import export_trial
+                    context_path = run_path / 'recording-context.json'
+                    if not context_path.exists():
+                        raise ValueError('This older recording lacks the context required for LeRobot export')
+                    context = json.loads(context_path.read_text())
+                    dataset = export_trial(run_path, task['cameras'], fps=context['fps'],
+                        robot_type=context['robot_type'], task=task['instruction'],
+                        metadata={'assignment_id': assignment['id'], 'run_id': run['id'],
+                            'side': run['side'], 'track': track, 'test': context['test'],
+                            'action_space': context['action_space'],
+                            'execution_enabled': context['execution_enabled'],
+                            'institution': assignment.get('institution', config.institution),
+                            'scene': assignment.get('scene', config.scene),
+                            'evaluator': assignment.get('evaluator', config.evaluator),
+                            'outcome': local['outcomes'][run['side']]})
+                    print(f'LeRobot dataset saved: {dataset}', flush=True)
             if 'result' not in local:
                 preference = None
                 if track == 'open':
@@ -297,15 +353,26 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                 local['result'] = {'outcomes': local['outcomes'], 'preference': preference,
                     'feedback': input('Feedback (optional): ').strip() if track == 'open' else ''}
                 save(manifest, local)
+            if config.recording:
+                print('Evaluation complete. Uploading saved recordings.', flush=True)
+            for run in assignment['runs']:
+                run_path = folder / run['id']
+                if config.recording:
+                    dataset = run_path / 'lerobot'
+                    # The server checks each object on retry; local flags alone do not prove durability.
+                    api.upload_dataset(run['id'], dataset)
+                    local.setdefault('datasets_uploaded', {})[run['id']] = True
+                    save(manifest, local)
+                    print('LeRobot dataset uploaded and verified.', flush=True)
             api.request('POST', f"/assignments/{assignment['id']}/result", local['result'])
             local['submitted'] = True; save(manifest, local)
-            print('Videos and result submitted.')
+            print('Videos and result submitted.' if config.recording else 'Evaluation result submitted (recording disabled).')
             if track == 'open' and not yes_no('Continue with the next evaluation?'):
                 return
             assignment = None
     except (Exception, KeyboardInterrupt):
         if 'assignment' in locals() and assignment:
-            print(f"Saved locally. Resume uploads/results: --resume {assignment['id']}; report interruption: --abort {assignment['id']}")
+            print(f"Saved locally. Restart the client to begin a new evaluation; the incomplete evaluation will not be published.")
         raise
     finally:
         api.close()

@@ -47,6 +47,8 @@ class TrialRecorder:
             images[camera] = np.array(observation.images[camera], dtype=np.uint8, copy=True)
         record = {'frame': self.frames, 'seconds': stamp,
                   'joints': np.asarray(observation.joints).tolist(),
+                  'gripper': np.asarray(observation.gripper).tolist(),
+                  'cartesian_position': np.asarray(observation.cartesian_position).tolist(),
                   'action': None if action is None else np.asarray(action).tolist()}
         try:
             self._queue.put_nowait((images, record))

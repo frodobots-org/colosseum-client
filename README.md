@@ -16,7 +16,7 @@ Fine-tuning reviews, and excludes synthetic results from formal ranking, difficu
 fitting and Fine-tuning summaries. Test attempts do not consume formal trial quotas.
 Test-only deployments are unavailable to `test: false` clients. Ready messages for
 simulation cannot start an assignment marked real. Changing mode during a pending
-assignment requires completing or aborting that assignment first.
+assignment is supported by restarting normally; the prior unfinished assignment is closed automatically.
 
 Web review is available at `/web/evals` on the Router, with Test badges under
 the original robot identity. Historical `robot_type: test` records are retained,
@@ -106,15 +106,15 @@ after the last action to capture the ending scene.
 
 Recording uses a dedicated writer thread and a bounded 32-frame queue. The control
 loop copies image/state/action buffers and enqueues them without waiting for PNG
-compression or disk writes. Capture timestamps are retained for variable-frame-rate
-video encoding. At 512×288 RGB, queued pixel data is about 13.5 MiB per camera.
+compression or disk writes. Actual capture timestamps are retained separately
+from the nominal-FPS LeRobot video timeline. At 512×288 RGB, queued pixel data is about 13.5 MiB per camera.
 The final frame and all queued writes finish before marking the run finished,
 scoring, encoding, or uploading. A full queue or disk error interrupts the trial
 with an explicit error instead of silently dropping evidence or stalling control.
 Incomplete recordings cannot be encoded by the upload flow.
 
 Older diagnostic trials with `recording-disabled.json` still have no video; use
-`--abort` to close those assignments. Previously saved recordings can resume uploads.
+a normal restart to close those assignments automatically. Explicit `--resume` can retry pending uploads before starting a new evaluation.
 
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
 executes server-assigned A, asks for its partial success (0–100), then prompts to
@@ -157,16 +157,20 @@ not wall-clock timeouts.
 Recordings are saved in `evaluation_dir` (default `eval_runs`) with separate assignment,
 run, and camera folders. Every action step records RGB images plus timestamp/state/action
 metadata. PNG recording and hardware camera reads consume time; confirm the achievable
-control rate on the real robot. MP4 encoding uses capture intervals, including inference
-pauses, instead of pretending every frame was captured at 30 Hz.
+control rate on the real robot. LeRobot MP4s align one frame per recorded action at
+the configured control FPS; capture timestamps preserve actual inference pauses.
 
 The local `manifest.json` records scores, uploaded cameras, and pending final submission.
 An upload or submission failure can be resumed without reexecuting a finished trial or
 asking for scores again. Source PNGs, timing records, MP4s, and the manifest are retained.
-If an execution itself was interrupted, resume will report that state; use `--abort`
-with a reason, then request another assignment. This prevents silently rerunning the
-same assigned attempt until it succeeds. An interrupted recording can be encoded and
-uploaded through the run video endpoint before aborting when needed for review.
+Starting the client normally always starts a fresh evaluation: it automatically
+closes any previous unfinished assignment owned by the same token, including
+runs left behind by Ctrl-C, connection loss or a killed process. No manual abort
+is required. Completed results are unchanged. Unfinished evaluations stay hidden
+from public review and do not consume completed-trial capacity. Local recordings
+remain available. Explicit `--resume` still retries a pending finished trial's
+uploads/results before a fresh start; it cannot revive a replaced assignment.
+
 
 The end-to-end tests use simulated hardware and real local HTTP/WebSocket/ffmpeg video
 uploads. They are not validation of physical robot behavior or real S3 credentials.
@@ -182,7 +186,7 @@ For Fine-tuning, select a predefined task from the server-provided menu after ch
 the track. Only tasks for this robot with remaining trials (or your pending trial)
 are listed. The server selects the model; successful rounds continue on the same task.
 `--resume FT-ID` keeps the original task. Stop and start again to select another
-task; finish or abort any pending assignment before switching. This menu requires
+task; any previous unfinished assignment is automatically closed. This menu requires
 a router version with `GET /api/eval/tasks` and `task_id` support.
 
 ## Configured evaluation and local inference
@@ -315,3 +319,102 @@ field; new tokens bind it automatically. Existing unbound tokens are migrated us
 their original names, while existing bindings are preserved.
 To change an existing binding, create a new token. Never infer institution from the
 operator-provided scene or evaluator name.
+
+### LeRobot recording
+
+With recording enabled, evaluations export a **LeRobot v3.0** dataset per trial. Update
+dependencies with `uv sync`, then run the usual Client command. Configuration:
+
+```yaml
+recording: true # default; false disables recording and dataset uploads
+```
+
+Each A/B run is a separate one-episode dataset:
+
+```text
+eval_runs/<assignment>/<run>/lerobot/
+  data/chunk-000/file-000.parquet
+  videos/observation.images.<camera>/chunk-000/file-000.mp4
+  meta/info.json
+  meta/stats.json
+  meta/tasks.parquet
+  meta/episodes/chunk-000/file-000.parquet
+  meta/colosseum.json
+```
+
+- `observation.state`: joint positions followed by gripper state.
+- `observation.cartesian_position`: the adapter's raw Cartesian pose vector.
+- `action`: the selected command for that observation, before execution; this does
+  not prove physical execution. Action-space and execution-enabled metadata are
+  recorded separately.
+- `observation.images.<camera>`: RGB video aligned one frame per recorded action.
+- `timestamp`: frame index divided by configured control FPS. This is a nominal
+  step timeline, not the actual elapsed wall time; observations are not resampled.
+- `observation.capture_timestamp`: original capture time in seconds since the
+  recorder started, preserving inference stalls and variable control timing.
+- `meta/colosseum.json`: run/assignment identity, task, model (local mode),
+  institution, scene, evaluator, per-trial score and synthetic-data flag.
+
+The final observation with no associated action remains in the raw recording; no
+action is invented for it. Odd image sizes are padded to even dimensions for H.264.
+Statistics are computed from recorded states/actions and source RGB pixels
+(including padding); decoded video can differ slightly due to lossy encoding.
+
+During each trial, a background writer saves image frames and state/action
+records locally. After that trial finishes and its score is saved, the Client
+finalizes its LeRobot dataset before starting the next model. Only uploads wait
+until all trials, scores, A/B preference and feedback are complete. Files are
+then uploaded sequentially before final result submission. Until that upload
+phase, recordings exist only on the Client machine. Completed exports are
+validated and reused on resume, and failed exports can be retried. Source
+PNG/JSONL recordings remain available. The complete dataset is uploaded before
+result submission. Web review reuses the dataset's videos, so LeRobot mode does
+not encode or upload separate review MP4s. With Router S3 storage
+enabled, files go directly to the private bucket using signed URLs; the Router
+verifies every file's size and SHA-256 before publishing replay. Failed uploads
+can be resumed and verified files are skipped. Datasets are not published to
+Hugging Face.
+
+The evaluation page retains the standard evaluation video players, using the
+LeRobot camera videos at the dataset's nominal FPS. The final observation without
+an action remains only in the raw recording. With `recording: false`, inference
+and scoring continue, but no images, state/action records, videos or datasets are
+saved or uploaded. Assignment metadata and scores still persist locally for
+resume. Published results have no playback footage. The flag is bound to the
+assignment and cannot change on resume.
+
+Normal usage is unchanged:
+
+```bash
+uv run colosseum-robot configs/robot.yaml
+```
+
+To upload an already exported dataset without rerunning the robot or changing
+its score, use the same owner token and institution:
+
+```bash
+uv run colosseum-upload-dataset configs/robot.yaml --evaluation-id <evaluation-id>
+```
+
+Omit `--evaluation-id` to upload all exported evaluations in `evaluation_dir`.
+The Router must support dataset endpoints, the assignment recording flag, and
+`POST /api/eval/reset` before using this Client version.
+
+Older recordings lack gripper state and recording context and cannot be faithfully
+exported with the current client. Preserve those source files; do not fabricate
+missing state or switch recording off to bypass an existing assignment requirement.
+
+Load a run in a separate environment with LeRobot installed:
+
+```python
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+dataset = LeRobotDataset(
+    "local/colosseum-run",
+    root="eval_runs/<assignment>/<run>/lerobot",
+    video_backend="pyav",
+)
+frame = dataset[0]
+```
+
+Format reference: https://huggingface.co/docs/lerobot/lerobot-dataset-v3

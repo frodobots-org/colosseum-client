@@ -23,6 +23,7 @@ class RobotClientConfig:
     adapter: str = "droid"
     api_url: str = ""
     evaluation_dir: str = "eval_runs"
+    recording: bool = True
     max_trial_steps: int = 2700
     instruction: str = ""
     control_hz: int = 15
@@ -54,7 +55,7 @@ class RobotClientConfig:
             value.setdefault("cameras", {})
         allowed = {
             "institution", "test", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
-            "robot_type", "adapter", "api_url", "evaluation_dir", "max_trial_steps",
+            "robot_type", "adapter", "api_url", "evaluation_dir", "recording", "max_trial_steps",
             "url",
             "token",
             "cameras",
@@ -102,6 +103,7 @@ class RobotClientConfig:
             adapter=value.get("adapter", robot_type if robot_type in {"yam", "test"} else "droid"),
             api_url=value.get("api_url", ""),
             evaluation_dir=value.get("evaluation_dir", "eval_runs"),
+            recording=value.get("recording", True),
             max_trial_steps=value.get("max_trial_steps", 2700),
             instruction=value.get("instruction", ""),
             control_hz=value.get("control_hz", 15),
@@ -109,6 +111,8 @@ class RobotClientConfig:
             image_width=value.get("image_width", 512),
             image_height=value.get("image_height", 288),
         )
+        if type(config.recording) is not bool:
+            raise ValueError("recording must be true or false")
         numbers = (
             config.prepare_timeout,
             config.max_trial_steps,

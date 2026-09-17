@@ -105,3 +105,19 @@ def test_test_flag_requires_boolean(tmp_path,value):
     path.write_text(f'robot_type: franka\ntest: {value}\nurl: ws://localhost\ntoken: t\n')
     with pytest.raises(ValueError,match='test must'):
         RobotClientConfig.from_yaml(path)
+
+
+def test_recording_defaults_enabled_and_requires_boolean(tmp_path):
+    path = tmp_path / "robot.yaml"
+    source = "router_url: ws://localhost:8000\ntoken: example\ntest: true\n"
+    path.write_text(source)
+    assert RobotClientConfig.from_yaml(path).recording is True
+    path.write_text(source + "recording: false\n")
+    assert RobotClientConfig.from_yaml(path).recording is False
+    for value in ['1', 'null', '"true"']:
+        path.write_text(source + f"recording: {value}\n")
+        with pytest.raises(ValueError, match="recording must"):
+            RobotClientConfig.from_yaml(path)
+    path.write_text(source + "recording_format: lerobot\n")
+    with pytest.raises(ValueError, match="unsupported keys"):
+        RobotClientConfig.from_yaml(path)

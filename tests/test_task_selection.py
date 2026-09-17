@@ -19,6 +19,7 @@ def test_empty_task_list_does_not_create_evaluation(tmp_path,monkeypatch):
         def __init__(self,config): pass
         def close(self): pass
         def request(self,method,path):
+            if path == '/reset': return {'discarded':None}
             assert method=='GET' and path.startswith('/tasks?')
             return {'tasks':[]}
     monkeypatch.setattr(e,'EvalAPI',API)
@@ -33,6 +34,7 @@ def test_config_skips_track_scene_prompts_and_sends_metadata(tmp_path, monkeypat
         def __init__(self, config): pass
         def close(self): pass
         def request(self, method, path, body=None):
+            if path == '/reset': return {'discarded':None}
             if path.startswith('/tasks?'):
                 return {'tasks':[{'id':'task-1','instruction':'Move cup'}]}
             sent.append(body)
