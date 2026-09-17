@@ -72,11 +72,6 @@ class LocalPolicyClient(ColosseumClient):
         if not verification_only and not self.test_robot and (dimensions.get(self.model['action_space']) != self.model['action_dim'] or self.model['control_hz'] != self.robot_spec.control_hz):
             raise ProtocolError('Assigned model does not support this robot action contract')
         simulate = False
-        if not verification_only:
-            info = await capabilities(self.router_url, details=True)
-            simulate = info.get('verification_only') is True
-            if simulate and not self.test_robot:
-                raise ProtocolError('Simulation server requires test: true')
         # Router credentials never travel to the local service.
         self.connection = await connect(self.router_url, proxy=None, open_timeout=10,
             compression=None, max_size=32 * 1024 * 1024, ping_interval=10, ping_timeout=10)
@@ -88,9 +83,12 @@ class LocalPolicyClient(ColosseumClient):
                 ready = await receive_control(self.connection, self.prepare_timeout)
                 if ready.get('run_id') != evaluation_run or ready.get('preparation_id') != preparation['preparation_id']:
                     raise ProtocolError('Local preparation correlation mismatch')
-                if simulate and ready.get('type') == 'received':
-                    if ready.get('model') != self.model or ready.get('verification_only') is not True:
-                        raise ProtocolError('Invalid simulation model receipt')
+                if not verification_only and ready.get('type') == 'received':
+                    simulate = ready.get('verification_only') is True
+                    if simulate and not self.test_robot:
+                        raise ProtocolError('Simulation server requires test: true')
+                    if ready.get('model') != self.model:
+                        raise ProtocolError('Invalid model receipt')
                     continue
                 if ready.get('type') == 'progress':
                     state = ready.get('state')
@@ -104,6 +102,9 @@ class LocalPolicyClient(ColosseumClient):
                             or ready.get('transport') != urlsplit(self.router_url).scheme):
                         raise ProtocolError('Invalid WebSocket verification receipt')
                     break
+                if ready.get('type') == 'simulation_ready' or ready.get('verification_only') is True:
+                    if not self.test_robot:
+                        raise ProtocolError('Simulation server requires test: true')
                 if simulate and ready.get('type') == 'simulation_ready':
                     if ready.get('verification_only') is not True or ready.get('loaded') is not False:
                         raise ProtocolError('Invalid simulation readiness')

@@ -14,7 +14,7 @@ is still simulated by `colosseum-policy-verify`.
 Router persists an immutable test flag per assignment, exposes it in Open and
 Fine-tuning reviews, and excludes synthetic results from formal ranking, difficulty
 fitting and Fine-tuning summaries. Test attempts do not consume formal trial quotas.
-Test-only deployments are unavailable to `test: false` clients. Ready messages for
+Test and real evaluations use the same registered model pool. Ready messages for
 simulation cannot start an assignment marked real. Changing mode during a pending
 assignment is supported by restarting normally; the prior unfinished assignment is closed automatically.
 
@@ -418,3 +418,8 @@ frame = dataset[0]
 ```
 
 Format reference: https://huggingface.co/docs/lerobot/lerobot-dataset-v3
+
+Local evaluations request model assignments directly from Router without querying
+Policy Server capabilities. Router specifies the model URL, revision and runtime
+profile; Client forwards them to Policy Server and waits for preparation progress
+and readiness. The verification server still simulates model preparation and inference.

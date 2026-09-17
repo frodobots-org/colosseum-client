@@ -76,7 +76,8 @@ async def test_simulation_inference_deadline():
         await c._simulate({'preparation_id':'p'})
 
 
-async def test_ready_starts_inference_without_router_ack(monkeypatch):
+@pytest.mark.parametrize('receipt', [False, True])
+async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt):
     from colosseum_client.local_protocol import encode_control, decode_control
     from colosseum_client import local_policy
     c = client()
@@ -84,7 +85,7 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch):
     model = dict(url='https://huggingface.co/example/model',revision='a'*40,
         runtime_profile='test',action_space='joint_position',action_dim=8,control_hz=15,max_horizon=1)
     preparation = dict(type='prepare', protocol_version=1, run_id=c.run_id,
-        preparation_id='p',model=model,task={'instruction':'Move cup'})
+        preparation_id='p',model=model,test=False,task={'instruction':'Move cup'})
     ack = asyncio.Event()
     class Router:
         calls = 0
@@ -95,15 +96,23 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch):
             return encode_control(dict(type='started',run_id=c.run_id))
         async def send(self,raw): pass
     class Policy:
-        async def recv(self): return encode_control({**preparation,'type':'ready'})
-        async def send(self,raw): pass
+        calls = 0
+        async def recv(self):
+            self.calls += 1
+            kind = 'received' if receipt and self.calls == 1 else 'ready'
+            return encode_control({**preparation, 'type': kind, 'verification_only': False})
+        async def send(self,raw):
+            message = decode_control(raw)
+            assert message['type'] == 'prepare' and message['test'] is False
+            assert message.get('state') != 'simulate'
         def __aiter__(self): return self
         async def __anext__(self):
             await asyncio.Event().wait()
     connections = iter([Router(),Policy()])
     async def connect(*args,**kwargs):return next(connections)
     monkeypatch.setattr(local_policy,'connect',connect)
-    async def capabilities(*args,**kwargs): return {}
+    async def capabilities(*args,**kwargs):
+        raise AssertionError('Preparation must not query policy capabilities')
     monkeypatch.setattr(local_policy,'capabilities',capabilities)
     try:
         await asyncio.wait_for(c.connect(evaluation_run=c.run_id),.2)

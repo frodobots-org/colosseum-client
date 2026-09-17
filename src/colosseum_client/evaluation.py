@@ -276,14 +276,10 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                 instruction = (config.instruction or input('Instruction: ').strip()) if track == 'open' else ''
                 scene = config.scene or (input('Scene / setup: ').strip() if track == 'open' else '')
                 mode = 'local' if config.policy_server_url else 'remote'
-                profiles = []
-                if mode == 'local':
-                    from .local_policy import capabilities
-                    profiles = asyncio.run(capabilities(config.policy_server_url))
                 try:
                     assignment = api.request('POST', '/next', {'robot_id': config.robot_type, 'track': track,
                         'instruction': instruction, 'scene': scene, 'evaluator': config.evaluator, 'institution': config.institution.strip(),
-                        'inference_mode': mode, 'runtime_profiles': profiles, 'test': config.test, 'recording': config.recording, 'max_steps': config.max_trial_steps,
+                        'inference_mode': mode, 'test': config.test, 'recording': config.recording, 'max_steps': config.max_trial_steps,
                         'cameras': list(config.cameras), **({'task_id': task_id} if track == 'fine-tuning' else {})})
                 except NoAssignment as exc:
                     print(str(exc)); return

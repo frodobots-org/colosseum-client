@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from .evaluation import EvalAPI, api_url, select_task
-from .local_policy import LocalPolicyClient, capabilities
+from .local_policy import LocalPolicyClient
 from .robot_config import RobotClientConfig
 
 
@@ -37,11 +37,10 @@ def run_check(config, *, run_id=None, task_id=None, prompt=None):
             raise SystemExit('Set track: 1 or track: 2 in config')
         api = EvalAPI(config)
         try:
-            profiles = asyncio.run(capabilities(config.policy_server_url))
             task_id = (task_id or select_task(api, config.robot_type)) if config.track == 'fine-tuning' else ''
             prompt = (prompt or config.instruction or input('Instruction: ').strip()) if config.track == 'open' else ''
             assignment = api.request('POST', '/next', dict(robot_id=config.robot_type, track=config.track,
-                inference_mode='local', runtime_profiles=profiles, test=config.test, task_id=task_id,
+                inference_mode='local', test=config.test, task_id=task_id,
                 instruction=prompt, institution=config.institution.strip(), scene=config.scene, evaluator=config.evaluator,
                 max_steps=config.max_trial_steps, cameras=list(config.cameras) or ['head_image']))
             run_id = next((r['id'] for r in assignment['runs'] if r['state'] == 'assigned'), None)
