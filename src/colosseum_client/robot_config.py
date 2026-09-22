@@ -17,6 +17,7 @@ class RobotClientConfig:
     evaluator: str = ""
     track: str = ""
     policy_server_url: str = ""
+    use_local_action_contract: bool = False
     prepare_timeout: int = 1800
     test: bool = False
     robot_type: str = "franka"
@@ -54,7 +55,7 @@ class RobotClientConfig:
         if value.get("test", False):
             value.setdefault("cameras", {})
         allowed = {
-            "institution", "test", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
+            "institution", "test", "scene", "evaluator", "track", "policy_server_url", "use_local_action_contract", "prepare_timeout",
             "robot_type", "adapter", "api_url", "evaluation_dir", "recording", "max_trial_steps",
             "url",
             "token",
@@ -97,6 +98,7 @@ class RobotClientConfig:
             evaluator=value.get("evaluator", ""),
             track=value["track"],
             policy_server_url=value["policy_server_url"],
+            use_local_action_contract=value.get("use_local_action_contract", False),
             prepare_timeout=value.get("prepare_timeout", 1800),
             robot_type=robot_type,
             test=value.get("test", False),
@@ -113,6 +115,8 @@ class RobotClientConfig:
         )
         if type(config.recording) is not bool:
             raise ValueError("recording must be true or false")
+        if type(config.use_local_action_contract) is not bool:
+            raise ValueError("use_local_action_contract must be true or false")
         numbers = (
             config.prepare_timeout,
             config.max_trial_steps,

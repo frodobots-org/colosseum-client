@@ -137,3 +137,20 @@ async def test_background_router_rejection_stops_further_actions():
         await c._report_lifecycle(dict(type='ready'))
     with pytest.raises(ProtocolError,match='not active'):
         await c.before_action(1)
+
+
+async def test_protobuf_error_frame_preserves_code_and_message():
+    c = client()
+    error = pb.Error(code='INFERENCE_FAILED', message='sanitized backend failure')
+    class Connection:
+        sent = False
+        def __aiter__(self): return self
+        async def __anext__(self):
+            if self.sent: raise StopAsyncIteration
+            self.sent = True
+            return pb.RelayFrame(protocol_version=1, type=pb.ERROR, session_id=c.run_id,
+                payload=error.SerializeToString()).SerializeToString()
+    c.connection = Connection()
+    await c._receive()
+    with pytest.raises(ProtocolError, match='INFERENCE_FAILED: sanitized backend failure'):
+        await c._expect(pb.ACTION_PLAN)

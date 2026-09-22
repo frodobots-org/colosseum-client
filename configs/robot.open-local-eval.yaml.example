@@ -1,0 +1,19 @@
+# Safe Local Policy example. Keep real credentials and hardware mappings outside Git.
+router_url: wss://router.example.com
+token: clt_replace_with_router_token
+institution: REPLACE_WITH_TOKEN_BOUND_INSTITUTION
+robot_type: test
+adapter: test
+test: true
+policy_server_url: ws://127.0.0.1:8000
+use_local_action_contract: false
+track: 1
+scene: example-scene
+evaluator: local-operator
+instruction: ""
+max_trial_steps: 1
+control_hz: 15
+deadline_ms: 30000
+prepare_timeout: 1800
+cameras: {}
+evaluation_dir: eval_runs

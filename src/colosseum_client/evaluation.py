@@ -35,8 +35,52 @@ class NoAssignment(RuntimeError):
     pass
 
 
+def trial_cameras(config, task):
+    """Router task cameras first, then extra cameras from local YAML."""
+    names = []
+    for name in list(task.get('cameras') or []) + list(config.cameras):
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def dump_http_error(response, *, where, log_dir=None):
+    """Print and persist the full HTTP status, headers, and body."""
+    headers = {}
+    for key, value in response.headers.items():
+        if key.lower() in {'authorization', 'cookie', 'x-colosseum-institution'}:
+            headers[key] = '<redacted>'
+        else:
+            headers[key] = value
+    request = getattr(response, 'request', None)
+    if request is None:
+        request_line = ''
+    else:
+        parsed = urlsplit(str(request.url))
+        request_line = f'{request.method} {urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))}'
+    body = response.text[:4096]
+    text = '\n'.join([
+        f'===== {where} =====',
+        f'status: {response.status_code}',
+        f'request: {request_line}',
+        f'headers: {headers!r}',
+        'body:',
+        body,
+        '===== end =====',
+    ])
+    print(text, flush=True)
+    if log_dir is not None:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        path = Path(log_dir) / f'upload-error-{stamp}.log'
+        path.write_text(text + '\n', encoding='utf-8')
+        print(f'Full error log written: {path}', flush=True)
+    return text
+
+
 class EvalAPI:
     def __init__(self, config):
+        self.log_dir = Path(config.evaluation_dir)
         self.client = httpx.Client(base_url=api_url(config).rstrip('/'),
             headers={'Authorization': f'Bearer {config.token}', 'X-Colosseum-Institution': quote(config.institution.strip(),safe='')}, timeout=30, trust_env=False, verify=ssl.create_default_context())
 
@@ -47,12 +91,13 @@ class EvalAPI:
             if detail.startswith(('No trial available', 'No pair available')):
                 raise NoAssignment(detail)
         if response.is_error:
+            dump_http_error(response, where=f'Evaluation API {method} {path}', log_dir=self.log_dir)
             raise RuntimeError(f'Evaluation API {response.status_code}: {response.text}')
         return response.json()
 
     def upload(self, run_id, camera, path):
         with path.open('rb') as source:
-            checksum = base64.b64encode(hashlib.file_digest(source, 'sha256').digest()).decode()
+            checksum = base64.b64encode(_sha256_stream(source)).decode()
         route = f'/runs/{run_id}/videos/{camera}'
         target = self.request('POST', route + '/upload-url',
                               {'size': path.stat().st_size, 'checksum_sha256': checksum})
@@ -62,13 +107,15 @@ class EvalAPI:
             with path.open('rb') as source:
                 response = self.client.put('/api/eval' + route, content=source,
                     headers={'Content-Type': 'video/mp4'}, timeout=300)
+            if response.is_error:
+                dump_http_error(response, where=f'local video upload {camera}', log_dir=getattr(self, 'log_dir', None))
             response.raise_for_status()
         elif target['storage'] == 's3':
             # Separate HTTP client: never forward the Colosseum bearer token to S3.
             with httpx.Client(timeout=300, trust_env=False) as upload_client, path.open('rb') as source:
                 response = upload_client.put(target['url'], content=source, headers=target['headers'])
             if response.status_code not in {200, 201, 204, 412}:
-                # Do not log the presigned URL (it grants temporary object access).
+                dump_http_error(response, where='S3 video upload', log_dir=getattr(self, 'log_dir', None))
                 raise RuntimeError(f'S3 upload failed ({response.status_code}); resume to retry')
             # 412 may mean a prior upload succeeded but its response was lost.
             self.request('POST', route + '/complete')
@@ -81,7 +128,7 @@ class EvalAPI:
         for path in sorted(root.rglob('*')):
             if path.is_file():
                 with path.open('rb') as source:
-                    checksum = base64.b64encode(hashlib.file_digest(source, 'sha256').digest()).decode()
+                    checksum = base64.b64encode(_sha256_stream(source)).decode()
                 files.append({'path': path.relative_to(root).as_posix(),
                               'size': path.stat().st_size, 'checksum_sha256': checksum})
         route = f'/runs/{run_id}/dataset'
@@ -97,14 +144,18 @@ class EvalAPI:
                 with httpx.Client(timeout=600, trust_env=False) as upload_client, path.open('rb') as source:
                     try:
                         response = upload_client.put(target['url'], content=source, headers=target['headers'])
-                    except httpx.HTTPError:
-                        raise RuntimeError('Dataset S3 connection failed; resume to retry') from None
+                    except httpx.HTTPError as exc:
+                        print(f'Dataset S3 connection failed: {exc!r}', flush=True)
+                        raise RuntimeError(f'Dataset S3 connection failed: {exc!r}; resume to retry') from exc
                 if response.status_code not in {200, 201, 204, 412}:
+                    dump_http_error(response, where=f'Dataset S3 upload {file["path"]}', log_dir=getattr(self, 'log_dir', None))
                     raise RuntimeError(f'Dataset S3 upload failed ({response.status_code}); resume to retry')
             elif target['storage'] == 'local':
                 with path.open('rb') as source:
                     response = self.client.put('/api/eval' + route + '/file' + query, content=source,
                                                headers={'Content-Type': 'application/octet-stream'}, timeout=600)
+                if response.is_error:
+                    dump_http_error(response, where=f'Dataset local upload {file["path"]}', log_dir=getattr(self, 'log_dir', None))
                 response.raise_for_status()
             else:
                 raise RuntimeError('Unknown dataset storage mode')
@@ -122,6 +173,13 @@ def save(path, document):
         output.flush()
         os.fsync(output.fileno())
     temp.replace(path)
+
+
+def _sha256_stream(source):
+    digest = hashlib.sha256()
+    for block in iter(lambda: source.read(1024 * 1024), b''):
+        digest.update(block)
+    return digest.digest()
 
 
 def progress(label):
@@ -143,27 +201,35 @@ def yes_no(label):
             return choice in {'y', 'yes'}
 
 
-async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot, execute_action=True):
+async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot, execute_action=True, confirm_live=None):
     # ZeroRPC/gevent connections must be created and used on the same OS thread.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='colosseum-robot') as executor:
-        async def robot_call(function, *args):
-            return await asyncio.get_running_loop().run_in_executor(executor, partial(function, *args))
+        async def robot_call(function, *args, **kwargs):
+            return await asyncio.get_running_loop().run_in_executor(executor, partial(function, *args, **kwargs))
 
         task = assignment['task']
         recorder = None
-        robot = await robot_call(robot_factory, config)
+        robot = None
         local_mode = assignment.get('inference_mode', 'remote') == 'local'
-        client_options = dict(robot_type=config.robot_type, joint_count=robot.joint_count,
-            has_gripper=robot.has_gripper, control_hz=config.control_hz,
-            action_spaces={robot.action_space_name: robot.action_dim})
         if local_mode:
             from .local_policy import LocalPolicyClient
-            client = LocalPolicyClient(config, api_url(config), **client_options)
+            client = LocalPolicyClient(config, api_url(config), robot_type=config.robot_type,
+                joint_count=7, has_gripper=True, control_hz=config.control_hz,
+                action_spaces={'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7})
         else:
+            robot = await robot_call(robot_factory, config)
+            client_options = dict(robot_type=config.robot_type, joint_count=robot.joint_count,
+                has_gripper=robot.has_gripper, control_hz=config.control_hz,
+                action_spaces={robot.action_space_name: robot.action_dim})
             client = ColosseumClient(config.url, config.token, client_id='', **client_options)
         step = 0
         try:
-            metadata = await client.connect(evaluation_run=run['id'], institution=config.institution)
+            if local_mode and not config.test and confirm_live is None:
+                raise ProtocolError('Physical local trial requires operator confirmation before RobotEnv construction')
+            options = {'before_start': confirm_live} if local_mode and not config.test else {}
+            metadata = await client.connect(evaluation_run=run['id'], institution=config.institution, **options)
+            if local_mode:
+                robot = await robot_call(robot_factory, config, action_space=client.model['action_space'])
             if config.test and local_mode:
                 await robot_call(robot.configure_model, client.model)
             if robot.action_space_name not in metadata.action_spaces:
@@ -175,7 +241,9 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     'robot_type': config.robot_type, 'fps': config.control_hz,
                     'action_space': robot.action_space_name,
                     'execution_enabled': execute_action, 'test': config.test})
-                recorder = TrialRecorder(path, task['cameras'])
+                record_cameras = trial_cameras(config, task)
+                print(f"Recording cameras: {record_cameras} (Router task cameras: {task['cameras']})", flush=True)
+                recorder = TrialRecorder(path, record_cameras)
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
             print('Recording enabled: frames are written by a background worker.' if recorder is not None
                   else 'Recording disabled.', flush=True)
@@ -218,9 +286,12 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
         finally:
             try:
                 await client.close()
+            except Exception as close_exc:
+                print(f"Client close failed after trial error: {close_exc}", flush=True)
             finally:
                 try:
-                    await robot_call(robot.close)
+                    if robot is not None:
+                        await robot_call(robot.close)
                 finally:
                     if recorder is not None:
                         await asyncio.to_thread(recorder.close)
@@ -275,6 +346,8 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                         print(str(exc)); return
                 instruction = (config.instruction or input('Instruction: ').strip()) if track == 'open' else ''
                 scene = config.scene or (input('Scene / setup: ').strip() if track == 'open' else '')
+                if track == 'open' and not instruction:
+                    raise ValueError('instruction cannot be empty')
                 mode = 'local' if config.policy_server_url else 'remote'
                 try:
                     assignment = api.request('POST', '/next', {'robot_id': config.robot_type, 'track': track,
@@ -309,8 +382,15 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     if (run_path / 'frames.jsonl').exists():
                         raise RuntimeError('Existing recording found; inspect this interrupted run instead of overwriting it')
                     input(f"\n{run['side']}: restore the scene to its initial setup, then press Enter to start.")
-                    asyncio.run(run_trial(config, assignment, run, run_path, api,
-                                          execute_action=execute_action))
+                    options = {'execute_action': execute_action}
+                    if assignment.get('inference_mode', 'remote') == 'local' and not config.test:
+                        def confirm_live(model, task):
+                            print(f"Prepared model: {model['url']}@{model['revision']} ({model['action_space']}).")
+                            print(f"Maximum control steps: {task.get('max_steps', assignment['task']['max_steps'])}.")
+                            print('RobotEnv initialization may reset the robot before any model action.')
+                            return yes_no('Confirm this physical trial may initialize the robot and start')
+                        options['confirm_live'] = confirm_live
+                    asyncio.run(run_trial(config, assignment, run, run_path, api, **options))
                 elif run['state'] != 'finished':
                     raise RuntimeError(f"Run {run['side']} was interrupted; restart the client for a new evaluation")
                 if (run_path / 'recording-disabled.json').exists():
@@ -329,7 +409,9 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     if not context_path.exists():
                         raise ValueError('This older recording lacks the context required for LeRobot export')
                     context = json.loads(context_path.read_text())
-                    dataset = export_trial(run_path, task['cameras'], fps=context['fps'],
+                    record_cameras = trial_cameras(config, task)
+                    print(f"Exporting cameras: {record_cameras} (Router task cameras: {task['cameras']})", flush=True)
+                    dataset = export_trial(run_path, record_cameras, fps=context['fps'],
                         robot_type=context['robot_type'], task=task['instruction'],
                         metadata={'assignment_id': assignment['id'], 'run_id': run['id'],
                             'side': run['side'], 'track': track, 'test': context['test'],
@@ -356,7 +438,18 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                 if config.recording:
                     dataset = run_path / 'lerobot'
                     # The server checks each object on retry; local flags alone do not prove durability.
-                    api.upload_dataset(run['id'], dataset)
+                    try:
+                        api.upload_dataset(run['id'], dataset)
+                    except Exception:
+                        import traceback
+                        log_text = traceback.format_exc()
+                        print(log_text, flush=True)
+                        stamp = time.strftime('%Y%m%d-%H%M%S')
+                        err_path = Path(config.evaluation_dir) / f'upload-error-{run["id"]}-{stamp}.log'
+                        err_path.parent.mkdir(parents=True, exist_ok=True)
+                        err_path.write_text(log_text, encoding='utf-8')
+                        print(f'Full error log written: {err_path}', flush=True)
+                        raise
                     local.setdefault('datasets_uploaded', {})[run['id']] = True
                     save(manifest, local)
                     print('LeRobot dataset uploaded and verified.', flush=True)
@@ -367,6 +460,17 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                 return
             assignment = None
     except (Exception, KeyboardInterrupt):
+        import traceback
+        log_text = traceback.format_exc()
+        print(log_text, flush=True)
+        try:
+            stamp = time.strftime('%Y%m%d-%H%M%S')
+            err_path = Path(config.evaluation_dir) / f'eval-error-{stamp}.log'
+            err_path.parent.mkdir(parents=True, exist_ok=True)
+            err_path.write_text(log_text, encoding='utf-8')
+            print(f'Full error log written: {err_path}', flush=True)
+        except Exception as log_exc:
+            print(f'Failed to write error log: {log_exc}', flush=True)
         if 'assignment' in locals() and assignment:
             print(f"Saved locally. Restart the client to begin a new evaluation; the incomplete evaluation will not be published.")
         raise

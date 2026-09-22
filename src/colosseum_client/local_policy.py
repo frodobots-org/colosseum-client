@@ -1,6 +1,8 @@
 """Local policy WS protocol: Protobuf control and inference frames."""
 import asyncio
+import json
 import contextlib
+import inspect
 import hashlib
 import struct
 import math
@@ -9,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit, quote
 from websockets.asyncio.client import connect
 
 from .local_protocol import encode_control, decode_control
+from .timeouts import timeout
 
 from .client import ColosseumClient, ProtocolError
 from . import colosseum_pb2 as pb
@@ -17,8 +20,12 @@ from . import colosseum_pb2 as pb
 async def receive_control(connection, timeout=30):
     raw = await asyncio.wait_for(connection.recv(), timeout)
     value = decode_control(raw)
-    if not isinstance(value, dict) or value.get('type') == 'error':
-        raise ProtocolError('Local policy/control request failed')
+    if not isinstance(value, dict):
+        raise ProtocolError('Local policy/control request failed: malformed response')
+    if value.get('type') == 'error':
+        code = str(value.get('code', 'LOCAL_POLICY_ERROR')).strip() or 'LOCAL_POLICY_ERROR'
+        message = str(value.get('message', '')).strip()
+        raise ProtocolError(f'Local policy/control request failed: {code}{": " + message if message else ""}')
     return value
 
 
@@ -43,6 +50,7 @@ class LocalPolicyClient(ColosseumClient):
         self.router_token = config.token
         self.institution = config.institution.strip()
         self.test_robot = config.test or config.robot_type == "test"
+        self.use_local_action_contract = config.use_local_action_contract
         self.inference_timeout = config.deadline_ms / 1000
         self.prepare_timeout = config.prepare_timeout
         self.control = None
@@ -54,7 +62,7 @@ class LocalPolicyClient(ColosseumClient):
         self.reporting_task = None
         self.reports = asyncio.Queue(maxsize=1024)
 
-    async def connect(self, *, evaluation_run='', verification_only=False, send_dummy=False, **kwargs):
+    async def connect(self, *, evaluation_run='', verification_only=False, send_dummy=False, before_start=None, **kwargs):
         if send_dummy and not self.test_robot:
             raise ProtocolError("Synthetic inference requires robot_type: test")
         self.run_id = evaluation_run
@@ -66,19 +74,22 @@ class LocalPolicyClient(ColosseumClient):
             raise ProtocolError('Invalid Router preparation')
         if not verification_only and bool(preparation.get('test', False)) != self.test_robot:
             raise ProtocolError('Router test flag differs from client configuration')
-        self.model = preparation['model']
+        self.router_model = preparation['model']
+        self.model = self.router_model
         self.task = preparation['task']
         dimensions = {a.name: a.action_dim for a in self.robot_spec.action_spaces}
-        if not verification_only and not self.test_robot and (dimensions.get(self.model['action_space']) != self.model['action_dim'] or self.model['control_hz'] != self.robot_spec.control_hz):
+        if (not verification_only and not self.test_robot and not self.use_local_action_contract
+                and (dimensions.get(self.model['action_space']) != self.model['action_dim']
+                     or self.model['control_hz'] != self.robot_spec.control_hz)):
             raise ProtocolError('Assigned model does not support this robot action contract')
         simulate = False
         # Router credentials never travel to the local service.
         self.connection = await connect(self.router_url, proxy=None, open_timeout=10,
-            compression=None, max_size=32 * 1024 * 1024, ping_interval=10, ping_timeout=10)
+            compression=None, max_size=32 * 1024 * 1024, ping_interval=20, ping_timeout=60)
         if send_dummy or simulate:
             preparation = {**preparation, "state":"simulate", "verification_only":True}
         await self.connection.send(encode_control(preparation))
-        async with asyncio.timeout(self.prepare_timeout):
+        async with timeout(self.prepare_timeout):
             while True:
                 ready = await receive_control(self.connection, self.prepare_timeout)
                 if ready.get('run_id') != evaluation_run or ready.get('preparation_id') != preparation['preparation_id']:
@@ -109,18 +120,49 @@ class LocalPolicyClient(ColosseumClient):
                     if ready.get('verification_only') is not True or ready.get('loaded') is not False:
                         raise ProtocolError('Invalid simulation readiness')
                     ready = {**ready, 'type':'ready', 'state':'simulation'}
-                if ready.get('type') != 'ready' or ready.get('model') != self.model:
+                if ready.get('type') != 'ready' or ready.get('model') != self.router_model:
                     raise ProtocolError('Local model revision/profile mismatch')
+                if self.use_local_action_contract:
+                    extra = {}
+                    raw_message = ready.get('message')
+                    if isinstance(raw_message, str) and raw_message.startswith('{'):
+                        try:
+                            parsed = json.loads(raw_message)
+                        except json.JSONDecodeError:
+                            parsed = None
+                        if isinstance(parsed, dict):
+                            extra = parsed
+                    effective = extra.get('effective_model', ready.get('effective_model'))
+                    if not isinstance(effective, dict) or effective.get('url') != self.router_model.get('url') or effective.get('revision') != self.router_model.get('revision'):
+                        raise ProtocolError('Local effective model identity mismatch')
+                    if (dimensions.get(effective.get('action_space')) != effective.get('action_dim')
+                            or effective.get('control_hz') != self.robot_spec.control_hz):
+                        raise ProtocolError('Local effective model does not support this robot action contract')
+                    self.model = effective
                 break
         if verification_only:
             if send_dummy:
                 ready['simulation'] = await self._simulate(preparation)
             return ready
+        if before_start is not None:
+            # input() must not run on the event loop. While it blocks, the local
+            # Policy Server cannot receive keepalive pongs and drops the socket
+            # before the first observation is sent.
+            if inspect.iscoroutinefunction(before_start):
+                approved = await before_start(self.model, self.task)
+            else:
+                approved = await asyncio.to_thread(before_start, self.model, self.task)
+            if approved is not True:
+                raise ProtocolError('Operator did not confirm the prepared local trial')
         self.session_id = evaluation_run
         self.receiver_task = asyncio.create_task(self._receive())
         # Readiness comes from Policy Server. Router acknowledgments are consumed
         # in order in the background, never on the inference/action start path.
-        self.reporting_task = asyncio.create_task(self._report_lifecycle(ready))
+        # Router receives only its assigned metadata.  ``effective_model`` is
+        # private to this loopback Client/Policy Server pair and governs local execution.
+        router_ready = {key: value for key, value in ready.items()
+                        if key not in {'effective_model', 'local_contract_override', 'message'}}
+        self.reporting_task = asyncio.create_task(self._report_lifecycle(router_ready))
         self.heartbeat_task = asyncio.create_task(self._heartbeat())
         return pb.SessionReady(policy_id='assigned-policy', action_spaces=[self.model['action_space']],
             control_hz=self.model['control_hz'], max_horizon=self.model['max_horizon'])
@@ -129,7 +171,7 @@ class LocalPolicyClient(ColosseumClient):
         print(f'SIMULATION: preparing model (timeout {self.prepare_timeout}s)', flush=True)
         started = asyncio.get_running_loop().time()
         try:
-            async with asyncio.timeout(self.prepare_timeout):
+            async with timeout(self.prepare_timeout):
                 while True:
                     reply = await receive_control(self.connection, self.prepare_timeout)
                     if (reply.get('run_id') != self.run_id or
@@ -142,7 +184,7 @@ class LocalPolicyClient(ColosseumClient):
                         raise ProtocolError('Expected simulation progress or readiness')
                     print(f"Policy: {reply['state']} — {reply.get('message','')} "
                           f"[elapsed {asyncio.get_running_loop().time()-started:.1f}s]", flush=True)
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             raise ProtocolError(f'Model preparation timed out after {self.prepare_timeout}s') from exc
         print('SIMULATION ready; sending 3 dummy observations; returned actions will only be validated.', flush=True)
         results = []
@@ -158,10 +200,10 @@ class LocalPolicyClient(ColosseumClient):
             started = asyncio.get_running_loop().time()
             print(f'Inference {sequence}/3: waiting (timeout {self.inference_timeout:g}s)...', flush=True)
             try:
-                async with asyncio.timeout(self.inference_timeout):
+                async with timeout(self.inference_timeout):
                     await self.connection.send(frame.SerializeToString())
                     raw = await self.connection.recv()
-            except TimeoutError as exc:
+            except asyncio.TimeoutError as exc:
                 raise ProtocolError(f'Inference {sequence} timed out after {self.inference_timeout:g}s') from exc
             if not isinstance(raw, bytes):
                 raise ProtocolError('Expected binary synthetic ActionPlan')
@@ -193,7 +235,12 @@ class LocalPolicyClient(ColosseumClient):
                 if isinstance(raw, str):
                     raise ProtocolError('Expected binary inference frame')
                 frame = pb.RelayFrame.FromString(raw)
-                if frame.protocol_version != 1 or frame.session_id != self.run_id or frame.type != pb.ACTION_PLAN:
+                if frame.protocol_version != 1 or frame.session_id != self.run_id:
+                    raise ProtocolError('Invalid local inference frame')
+                if frame.type == pb.ERROR:
+                    error = pb.Error.FromString(frame.payload)
+                    raise ProtocolError(f"Local inference failed: {error.code or 'LOCAL_POLICY_ERROR'}{': ' + error.message if error.message else ''}")
+                if frame.type != pb.ACTION_PLAN:
                     raise ProtocolError('Invalid local inference frame')
                 self.incoming.put_nowait(frame)
             raise ProtocolError('Local policy disconnected')
@@ -205,10 +252,11 @@ class LocalPolicyClient(ColosseumClient):
                 self.incoming.put_nowait(exc)
 
     async def _expect(self, expected_type):
-        self.ensure_active()
+        if not self.session_id:
+            raise ProtocolError('Local Trial connection is not active') from self.failure
         frame = await self.incoming.get()
         if isinstance(frame, Exception):
-            raise ProtocolError('Local inference interrupted') from frame
+            raise ProtocolError(str(frame)) from frame
         self.ensure_active()
         if frame.type != expected_type:
             raise ProtocolError('Unexpected local message')
@@ -232,7 +280,7 @@ class LocalPolicyClient(ColosseumClient):
 
     async def _report_lifecycle(self, ready):
         try:
-            async with asyncio.timeout(10):
+            async with timeout(10):
                 await self.control.send(encode_control(ready))
                 started = await receive_control(self.control, timeout=10)
                 if started != dict(type='started', run_id=self.run_id):
@@ -287,7 +335,7 @@ class LocalPolicyClient(ColosseumClient):
             self.heartbeat_task = None
         self._queue_report('finish', 'finished')
         # Before saving scores or starting B, confirm all A events were persisted.
-        async with asyncio.timeout(30):
+        async with timeout(30):
             await self.reporting_task
         self.ensure_active()
 
@@ -299,6 +347,9 @@ class LocalPolicyClient(ColosseumClient):
                     await task
         try:
             await super().close()
+        except Exception:
+            pass
         finally:
             if self.control:
-                await self.control.close()
+                with contextlib.suppress(Exception):
+                    await self.control.close()
