@@ -33,7 +33,7 @@ class RobotClientConfig:
     dataset_url: str = ""
     dataset_token: str = field(default="", repr=False)
     dataset_token_file: str = ""
-    max_trial_steps: int = 2700
+    max_trial_steps: int = 800
     instruction: str = ""
     control_hz: int = 15
     deadline_ms: int = 30000
@@ -151,7 +151,7 @@ class RobotClientConfig:
             dataset_token_file=(str((Path(path).resolve().parent / Path(value["dataset_token_file"]).expanduser()).resolve())
                 if isinstance(value.get("dataset_token_file"), str) and value["dataset_token_file"]
                 else value.get("dataset_token_file", "")),
-            max_trial_steps=value.get("max_trial_steps", 2700),
+            max_trial_steps=value.get("max_trial_steps", cls.max_trial_steps),
             instruction=value.get("instruction", ""),
             control_hz=value.get("control_hz", 15),
             deadline_ms=value.get("deadline_ms", cls.deadline_ms),

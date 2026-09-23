@@ -19,6 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+franka = ["droid"]
 modelscope = ["modelscope-hub>=0.4.5,<0.5"]
 huggingface = ["huggingface-hub>=1.0,<2"]
 dev = ["grpcio-tools>=1.66", "pytest>=8", "pytest-asyncio>=0.24"]
@@ -30,3 +31,11 @@ colosseum-upload-dataset = "colosseum_client.dataset_upload:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.uv]
+# DROID pins protobuf 3.20.1; keep the Client's generated protocol on protobuf 6.
+# Runtime compatibility with DROID still needs hardware validation.
+override-dependencies = ["protobuf>=6.33.5,<7"]
+
+[tool.uv.sources]
+droid = { git = "https://github.com/droid-dataset/droid.git", rev = "33ae6a67274f36d2e29525b86f23a56616ef43a7" }
