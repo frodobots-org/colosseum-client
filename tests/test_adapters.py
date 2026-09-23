@@ -93,7 +93,9 @@ def test_droid_still_uses_existing_factory(monkeypatch):
     calls = []
     monkeypatch.setattr(adapters, 'DroidRobot', lambda *args, **kwargs: calls.append((args, kwargs)))
     make_robot(config())
-    assert calls == [(({'wrist': 'camera0'},), {'image_size': (512, 288)})]
+    assert calls == [(({'wrist': 'camera0'},), {
+        'action_space': 'joint_position', 'image_size': (512, 288)
+    })]
 
 
 @pytest.mark.parametrize('settings', [{'robot_type': 'g1'}, {'test': True}])

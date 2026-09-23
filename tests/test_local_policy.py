@@ -137,3 +137,20 @@ async def test_background_router_rejection_stops_further_actions():
         await c._report_lifecycle(dict(type='ready'))
     with pytest.raises(ProtocolError,match='not active'):
         await c.before_action(1)
+
+
+async def test_control_error_keeps_code_and_message():
+    from colosseum_client.local_protocol import decode_control
+    from colosseum_client import local_policy
+    frame = pb.RelayFrame(
+        protocol_version=1, type=pb.ERROR, session_id='run-test',
+        payload=pb.Error(code='MODEL_START_FAILED', message='launcher failed', retryable=False).SerializeToString(),
+    )
+    assert decode_control(frame.SerializeToString()) == {
+        'type': 'error', 'code': 'MODEL_START_FAILED', 'message': 'launcher failed', 'retryable': False,
+    }
+    class Connection:
+        async def recv(self):
+            return frame.SerializeToString()
+    with pytest.raises(ProtocolError, match='MODEL_START_FAILED: launcher failed'):
+        await local_policy.receive_control(Connection())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
 
 from .robot_config import RobotClientConfig
 from .robot_runner import run_robot
@@ -17,8 +18,14 @@ def main() -> None:
     parser.add_argument("--inference-only", action="store_true", help="Use the original single-policy inference loop")
     parser.add_argument("--no-execute-action", action="store_true",
                         help="Receive and log actions without executing them on the robot")
+    for name in ('instruction', 'scene', 'evaluator'):
+        parser.add_argument('--' + name)
     args = parser.parse_args()
     config = RobotClientConfig.from_yaml(args.config)
+    overrides = {name: getattr(args, name) for name in ('instruction', 'scene', 'evaluator')
+                 if getattr(args, name) is not None}
+    if overrides:
+        config = replace(config, **overrides)
     if args.inference_only and config.policy_server_url:
         raise SystemExit("policy_server_url requires evaluation mode so Router can assign the model")
     if not args.inference_only:

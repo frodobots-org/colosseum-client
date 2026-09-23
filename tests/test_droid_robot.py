@@ -70,3 +70,16 @@ def test_droid_robot_rejects_bad_action():
     )
     with pytest.raises(ValueError, match="8 values"):
         robot.execute(np.zeros(7))
+
+
+def test_droid_robot_uses_instance_cartesian_contract():
+    environment = FakeRobotEnv()
+    robot = DroidRobot(
+        {"head_image": "123"}, action_space="cartesian_position",
+        image_size=(3, 2), environment=environment,
+    )
+    assert robot.action_space_name == "cartesian_position"
+    assert robot.action_dim == 7
+    robot.execute(np.array([0, 0, 0, 0, 0, 0, .8], dtype=np.float32))
+    assert environment.actions[0].shape == (7,)
+    assert environment.actions[0][-1] == 1

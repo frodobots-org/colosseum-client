@@ -44,6 +44,8 @@ class DroidRobot(Robot):
         self.environment = environment
         self.cameras = dict(cameras)
         self.action_space = action_space
+        self.action_space_name = action_space
+        self.action_dim = 8 if action_space.startswith("joint") else 7
         self.image_size = image_size
 
     def get_observation(self) -> RobotObservation:
@@ -74,8 +76,10 @@ class DroidRobot(Robot):
 
     def execute(self, action: np.ndarray) -> None:
         command = np.asarray(action, dtype=np.float32).reshape(-1).copy()
-        if command.size != 8:
-            raise ValueError(f"DROID action must have 8 values, got {command.size}")
+        if command.size != self.action_dim:
+            raise ValueError(
+                f"DROID {self.action_space} action must have {self.action_dim} values, got {command.size}"
+            )
         if not np.all(np.isfinite(command)):
             raise ValueError("action must contain finite values")
         command[-1] = 1.0 if command[-1] > 0.5 else 0.0

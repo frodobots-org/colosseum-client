@@ -16,8 +16,14 @@ def decode_control(raw):
         raise ValueError('Binary Protobuf control frame required')
     try:
         frame = pb.RelayFrame.FromString(raw)
-        if frame.protocol_version != 1 or frame.type != pb.LOCAL_CONTROL:
-            raise ValueError('Invalid control frame version/type')
+        if frame.protocol_version != 1:
+            raise ValueError('Invalid control frame version')
+        if frame.type == pb.ERROR:
+            error = pb.Error.FromString(frame.payload)
+            return {'type': 'error', 'code': error.code, 'message': error.message,
+                    'retryable': bool(error.retryable)}
+        if frame.type != pb.LOCAL_CONTROL:
+            raise ValueError('Invalid control frame type')
         message = pb.LocalControl.FromString(frame.payload)
         if not message.type or frame.session_id != message.run_id:
             raise ValueError('Invalid control message/session')

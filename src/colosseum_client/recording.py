@@ -14,7 +14,7 @@ from PIL import Image
 
 
 class TrialRecorder:
-    def __init__(self, path: Path, cameras: list[str], *, queue_size: int = 32):
+    def __init__(self, path: Path, cameras: list[str], *, queue_size: int = 256):
         if shutil.which('ffmpeg') is None:
             raise RuntimeError('Install ffmpeg before starting a trial')
         self.path = path
@@ -61,7 +61,7 @@ class TrialRecorder:
         for camera, pixels in images.items():
             folder = self.path / camera
             folder.mkdir(exist_ok=True)
-            Image.fromarray(pixels).save(folder / f"{record['frame']:06d}.png")
+            Image.fromarray(pixels).save(folder / f"{record['frame']:06d}.png", compress_level=0)
         with (self.path / 'frames.jsonl').open('a') as output:
             output.write(json.dumps(record) + '\n')
 

@@ -35,6 +35,22 @@ class NoAssignment(RuntimeError):
     pass
 
 
+def sha256_stream(source):
+    digest = hashlib.sha256()
+    for block in iter(lambda: source.read(1024 * 1024), b''):
+        digest.update(block)
+    return digest.digest()
+
+
+def trial_cameras(config, task):
+    """Use Router-required cameras plus explicit local recording cameras."""
+    names = []
+    for name in list(task.get('cameras') or []) + list(config.cameras):
+        if name not in names:
+            names.append(name)
+    return names
+
+
 class EvalAPI:
     def __init__(self, config):
         self.client = httpx.Client(base_url=api_url(config).rstrip('/'),
@@ -52,7 +68,7 @@ class EvalAPI:
 
     def upload(self, run_id, camera, path):
         with path.open('rb') as source:
-            checksum = base64.b64encode(hashlib.file_digest(source, 'sha256').digest()).decode()
+            checksum = base64.b64encode(sha256_stream(source)).decode()
         route = f'/runs/{run_id}/videos/{camera}'
         target = self.request('POST', route + '/upload-url',
                               {'size': path.stat().st_size, 'checksum_sha256': checksum})
@@ -81,7 +97,7 @@ class EvalAPI:
         for path in sorted(root.rglob('*')):
             if path.is_file():
                 with path.open('rb') as source:
-                    checksum = base64.b64encode(hashlib.file_digest(source, 'sha256').digest()).decode()
+                    checksum = base64.b64encode(sha256_stream(source)).decode()
                 files.append({'path': path.relative_to(root).as_posix(),
                               'size': path.stat().st_size, 'checksum_sha256': checksum})
         route = f'/runs/{run_id}/dataset'
@@ -143,27 +159,42 @@ def yes_no(label):
             return choice in {'y', 'yes'}
 
 
-async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot, execute_action=True):
+async def run_trial(config, assignment, run, path, api, *, robot_factory=make_robot,
+                    execute_action=True, confirm_live=None):
     # ZeroRPC/gevent connections must be created and used on the same OS thread.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='colosseum-robot') as executor:
-        async def robot_call(function, *args):
-            return await asyncio.get_running_loop().run_in_executor(executor, partial(function, *args))
+        async def robot_call(function, *args, **kwargs):
+            return await asyncio.get_running_loop().run_in_executor(
+                executor, partial(function, *args, **kwargs)
+            )
 
         task = assignment['task']
         recorder = None
-        robot = await robot_call(robot_factory, config)
+        robot = None
         local_mode = assignment.get('inference_mode', 'remote') == 'local'
-        client_options = dict(robot_type=config.robot_type, joint_count=robot.joint_count,
-            has_gripper=robot.has_gripper, control_hz=config.control_hz,
-            action_spaces={robot.action_space_name: robot.action_dim})
         if local_mode:
+            if not config.test and config.robot_type != 'franka':
+                raise ValueError('Local Policy evaluation currently supports robot_type: franka only')
             from .local_policy import LocalPolicyClient
-            client = LocalPolicyClient(config, api_url(config), **client_options)
+            client = LocalPolicyClient(
+                config, api_url(config), robot_type=config.robot_type, joint_count=7,
+                has_gripper=True, control_hz=config.control_hz,
+                action_spaces={'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7},
+            )
         else:
+            robot = await robot_call(robot_factory, config)
+            client_options = dict(robot_type=config.robot_type, joint_count=robot.joint_count,
+                has_gripper=robot.has_gripper, control_hz=config.control_hz,
+                action_spaces={robot.action_space_name: robot.action_dim})
             client = ColosseumClient(config.url, config.token, client_id='', **client_options)
         step = 0
         try:
-            metadata = await client.connect(evaluation_run=run['id'], institution=config.institution)
+            if local_mode and not config.test and confirm_live is None:
+                raise ProtocolError('Physical local trial requires operator confirmation before RobotEnv construction')
+            options = {'before_start': confirm_live} if local_mode and not config.test else {}
+            metadata = await client.connect(evaluation_run=run['id'], institution=config.institution, **options)
+            if local_mode:
+                robot = await robot_call(robot_factory, config, action_space=client.model['action_space'])
             if config.test and local_mode:
                 await robot_call(robot.configure_model, client.model)
             if robot.action_space_name not in metadata.action_spaces:
@@ -175,7 +206,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     'robot_type': config.robot_type, 'fps': config.control_hz,
                     'action_space': robot.action_space_name,
                     'execution_enabled': execute_action, 'test': config.test})
-                recorder = TrialRecorder(path, task['cameras'])
+                recorder = TrialRecorder(path, trial_cameras(config, task))
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
             print('Recording enabled: frames are written by a background worker.' if recorder is not None
                   else 'Recording disabled.', flush=True)
@@ -220,7 +251,8 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 await client.close()
             finally:
                 try:
-                    await robot_call(robot.close)
+                    if robot is not None:
+                        await robot_call(robot.close)
                 finally:
                     if recorder is not None:
                         await asyncio.to_thread(recorder.close)
@@ -309,8 +341,21 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     if (run_path / 'frames.jsonl').exists():
                         raise RuntimeError('Existing recording found; inspect this interrupted run instead of overwriting it')
                     input(f"\n{run['side']}: restore the scene to its initial setup, then press Enter to start.")
-                    asyncio.run(run_trial(config, assignment, run, run_path, api,
-                                          execute_action=execute_action))
+                    options = {'execute_action': execute_action}
+                    if assignment.get('inference_mode', 'remote') == 'local' and not config.test:
+                        def confirm_live(model, prepared_task):
+                            print(
+                                f"Prepared model: {model['url']}@{model['revision']} "
+                                f"({model['action_space']})."
+                            )
+                            print(
+                                f"Maximum control steps: "
+                                f"{prepared_task.get('max_steps', task.get('max_steps'))}."
+                            )
+                            print('RobotEnv initialization may reset the robot before any model action.')
+                            return yes_no('Confirm this physical trial may initialize the robot and start')
+                        options['confirm_live'] = confirm_live
+                    asyncio.run(run_trial(config, assignment, run, run_path, api, **options))
                 elif run['state'] != 'finished':
                     raise RuntimeError(f"Run {run['side']} was interrupted; restart the client for a new evaluation")
                 if (run_path / 'recording-disabled.json').exists():
@@ -329,7 +374,7 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     if not context_path.exists():
                         raise ValueError('This older recording lacks the context required for LeRobot export')
                     context = json.loads(context_path.read_text())
-                    dataset = export_trial(run_path, task['cameras'], fps=context['fps'],
+                    dataset = export_trial(run_path, trial_cameras(config, task), fps=context['fps'],
                         robot_type=context['robot_type'], task=task['instruction'],
                         metadata={'assignment_id': assignment['id'], 'run_id': run['id'],
                             'side': run['side'], 'track': track, 'test': context['test'],

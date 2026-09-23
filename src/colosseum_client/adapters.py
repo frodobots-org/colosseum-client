@@ -37,11 +37,12 @@ def load_adapter_factory(name: str):
     return factory
 
 
-def make_robot(config: RobotClientConfig) -> Robot:
+def make_robot(config: RobotClientConfig, *, action_space: str = "joint_position") -> Robot:
     if config.test or config.robot_type == 'test':
         return TestRobot(config)
     if config.robot_type == 'franka':
-        return DroidRobot(config.cameras, image_size=(config.image_width, config.image_height))
+        return DroidRobot(config.cameras, action_space=action_space,
+                          image_size=(config.image_width, config.image_height))
     return load_adapter_factory(config.robot_type)(config)
 
 
@@ -65,8 +66,8 @@ class TestRobot(Robot):
         import numpy as np
         self.action_dim = model['action_dim']
         self.action_space_name = model['action_space']
-        self.joint_count = max(1, self.action_dim - 1)
-        self.joints = np.zeros(self.joint_count, dtype=np.float32)
+        self.joint_count = 7
+        self.joints = np.zeros(7, dtype=np.float32)
 
     def get_observation(self):
         import numpy as np
@@ -83,7 +84,9 @@ class TestRobot(Robot):
         value = np.asarray(action,dtype=np.float32)
         if value.shape != (self.action_dim,) or not np.isfinite(value).all():
             raise ValueError('Invalid dummy robot action')
-        self.joints, self.gripper = value[:-1].copy(),value[-1:].copy()
+        if self.action_space_name.startswith('joint'):
+            self.joints = value[:-1].copy()
+        self.gripper = value[-1:].copy()
         self.step += 1
 
     def close(self):

@@ -68,7 +68,7 @@ def test_robot_type_is_the_only_selector(tmp_path, robot_type):
     path.write_text(f'url: ws://localhost\ntoken: test\ncameras: {{head_image: "test"}}\nrobot_type: {robot_type}\n')
     c = RobotClientConfig.from_yaml(path)
     assert c.robot_type == robot_type
-    assert not hasattr(c, 'adapter')
+    assert c.adapter is None
 
 
 def test_communication_config_needs_no_cameras(tmp_path):
@@ -128,7 +128,7 @@ def test_recording_defaults_enabled_and_requires_boolean(tmp_path):
     ('adapter_config: {1: value}', 'adapter_config must'),
     ('robot_type: DROID', 'Use robot_type: franka'),
     ('robot_type: droid', 'Use robot_type: franka'),
-    ('adapter: so101', 'unsupported keys'),
+    ('adapter: so101', 'legacy adapter'),
     ('robot_type: []', 'robot_type must'),
     ('robot_type: ""', 'robot_type must'),
     ('cameras: {../outside: camera}', 'camera names must'),
@@ -155,6 +155,32 @@ adapter_config:
     assert config.robot_type == 'custom'
     assert config.adapter_config == {'address': 'localhost', 'arms': ['left', 'right']}
     assert config.policy_server_url == ''
+
+
+def test_legacy_droid_adapter_is_accepted_only_for_franka(tmp_path):
+    path = tmp_path / 'robot.yaml'
+    path.write_text(
+        'url: ws://localhost\ntoken: test\ntest: true\nrobot_type: franka\nadapter: droid\n'
+    )
+    config = RobotClientConfig.from_yaml(path)
+    assert config.robot_type == 'franka' and config.adapter == 'droid'
+    path.write_text(
+        'url: ws://localhost\ntoken: test\ntest: true\nrobot_type: yam\nadapter: droid\n'
+    )
+    with pytest.raises(ValueError, match='only'):
+        RobotClientConfig.from_yaml(path)
+
+
+def test_local_action_contract_is_explicit_and_requires_local_policy(tmp_path):
+    path = tmp_path / 'robot.yaml'
+    path.write_text('url: ws://localhost\ntoken: test\ntest: true\nuse_local_action_contract: true\n')
+    with pytest.raises(ValueError, match='requires policy_server_url'):
+        RobotClientConfig.from_yaml(path)
+    path.write_text(
+        'url: ws://localhost\ntoken: test\ntest: true\n'
+        'policy_server_url: ws://localhost:8000\nuse_local_action_contract: true\n'
+    )
+    assert RobotClientConfig.from_yaml(path).use_local_action_contract is True
 
 
 @pytest.mark.parametrize('value', ['1', 'null', '"true"'])

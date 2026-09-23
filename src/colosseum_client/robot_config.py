@@ -20,7 +20,9 @@ class RobotClientConfig:
     policy_server_url: str = ""
     prepare_timeout: int = 1800
     test: bool = False
+    use_local_action_contract: bool = False
     robot_type: str = "franka"
+    adapter: str | None = None
     adapter_config: Mapping[str, Any] = field(default_factory=dict)
     api_url: str = ""
     evaluation_dir: str = "eval_runs"
@@ -36,6 +38,8 @@ class RobotClientConfig:
     def __post_init__(self) -> None:
         if self.robot_type in {"DROID", "droid"}:
             raise ValueError("Use robot_type: franka; DROID is the driver, not a robot type")
+        if self.adapter is not None and (self.adapter != "droid" or self.robot_type != "franka"):
+            raise ValueError("legacy adapter is supported only as adapter: droid with robot_type: franka")
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RobotClientConfig":
@@ -55,13 +59,15 @@ class RobotClientConfig:
             value["policy_server_url"] = ""
         if type(value.get("test", False)) is not bool:
             raise ValueError("test must be true or false")
+        if type(value.get("use_local_action_contract", False)) is not bool:
+            raise ValueError("use_local_action_contract must be true or false")
         if value.get("robot_type") == "test":
             value["test"] = True  # Legacy configuration remains marked synthetic.
         if value.get("test", False):
             value.setdefault("cameras", {})
         allowed = {
-            "institution", "test", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
-            "robot_type", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
+            "institution", "test", "use_local_action_contract", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
+            "robot_type", "adapter", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
             "url",
             "token",
             "cameras",
@@ -95,6 +101,9 @@ class RobotClientConfig:
         adapter_config = value.get("adapter_config", {})
         if not isinstance(adapter_config, dict) or any(not isinstance(key, str) for key in adapter_config):
             raise ValueError("adapter_config must be a mapping with string keys")
+        adapter = value.get("adapter")
+        if adapter is not None and (adapter != "droid" or robot_type != "franka"):
+            raise ValueError("legacy adapter is supported only as adapter: droid with robot_type: franka")
 
         config = cls(
             url=value["url"],
@@ -108,6 +117,8 @@ class RobotClientConfig:
             prepare_timeout=value.get("prepare_timeout", 1800),
             robot_type=robot_type,
             test=value.get("test", False),
+            use_local_action_contract=value.get("use_local_action_contract", False),
+            adapter=adapter,
             adapter_config=dict(adapter_config),
             api_url=value.get("api_url", ""),
             evaluation_dir=value.get("evaluation_dir", "eval_runs"),
@@ -136,6 +147,8 @@ class RobotClientConfig:
             raise ValueError("control_hz, deadline_ms, image_width, and image_height must be positive")
         if not isinstance(config.instruction, str):
             raise ValueError("instruction must be a string")
+        if config.use_local_action_contract and not config.policy_server_url:
+            raise ValueError("use_local_action_contract requires policy_server_url")
         if not all(isinstance(v, str) and v for v in (config.robot_type, config.evaluation_dir)):
             raise ValueError("robot_type and evaluation_dir must be nonempty strings")
         if not isinstance(config.api_url, str) or (config.api_url and not config.api_url.startswith(("https://", "http://"))):
