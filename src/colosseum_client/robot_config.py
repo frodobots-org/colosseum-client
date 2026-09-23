@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 import yaml
 
@@ -20,16 +21,21 @@ class RobotClientConfig:
     prepare_timeout: int = 1800
     test: bool = False
     robot_type: str = "franka"
-    adapter: str = "droid"
+    adapter_config: Mapping[str, Any] = field(default_factory=dict)
     api_url: str = ""
     evaluation_dir: str = "eval_runs"
     recording: bool = True
+    skip_upload: bool = False
     max_trial_steps: int = 2700
     instruction: str = ""
     control_hz: int = 15
     deadline_ms: int = 30000
     image_width: int = 512
     image_height: int = 288
+
+    def __post_init__(self) -> None:
+        if self.robot_type in {"DROID", "droid"}:
+            raise ValueError("Use robot_type: franka; DROID is the driver, not a robot type")
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RobotClientConfig":
@@ -55,7 +61,7 @@ class RobotClientConfig:
             value.setdefault("cameras", {})
         allowed = {
             "institution", "test", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
-            "robot_type", "adapter", "api_url", "evaluation_dir", "recording", "max_trial_steps",
+            "robot_type", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
             "url",
             "token",
             "cameras",
@@ -76,17 +82,19 @@ class RobotClientConfig:
         if not isinstance(value["token"], str) or not value["token"]:
             raise ValueError("token must be a non-empty string")
         cameras = value["cameras"]
-        valid_camera_names = {"left_image", "right_image", "head_image"}
         if not isinstance(cameras, dict) or (not cameras and not value.get("test", False)):
             raise ValueError("cameras must map image names to camera IDs")
-        if cameras.keys() - valid_camera_names:
-            raise ValueError("camera names must be left_image, right_image, or head_image")
+        if any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", name) for name in cameras):
+            raise ValueError("camera names must contain only letters, digits, underscores or hyphens")
         if any(not isinstance(camera_id, (str, int)) or not str(camera_id) for camera_id in cameras.values()):
             raise ValueError("camera IDs must be non-empty strings or integers")
 
         robot_type = value.get("robot_type", "franka")
-        if robot_type not in ("franka", "yam", "test", "DROID"):
-            raise ValueError("robot_type must be franka, yam or test (legacy DROID is also accepted)")
+        if not isinstance(robot_type, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", robot_type):
+            raise ValueError("robot_type must be a nonempty identifier using letters, digits, underscores or hyphens")
+        adapter_config = value.get("adapter_config", {})
+        if not isinstance(adapter_config, dict) or any(not isinstance(key, str) for key in adapter_config):
+            raise ValueError("adapter_config must be a mapping with string keys")
 
         config = cls(
             url=value["url"],
@@ -100,10 +108,11 @@ class RobotClientConfig:
             prepare_timeout=value.get("prepare_timeout", 1800),
             robot_type=robot_type,
             test=value.get("test", False),
-            adapter=value.get("adapter", robot_type if robot_type in {"yam", "test"} else "droid"),
+            adapter_config=dict(adapter_config),
             api_url=value.get("api_url", ""),
             evaluation_dir=value.get("evaluation_dir", "eval_runs"),
             recording=value.get("recording", True),
+            skip_upload=value.get("skip_upload", False),
             max_trial_steps=value.get("max_trial_steps", 2700),
             instruction=value.get("instruction", ""),
             control_hz=value.get("control_hz", 15),
@@ -113,6 +122,8 @@ class RobotClientConfig:
         )
         if type(config.recording) is not bool:
             raise ValueError("recording must be true or false")
+        if type(config.skip_upload) is not bool:
+            raise ValueError("skip_upload must be true or false")
         numbers = (
             config.prepare_timeout,
             config.max_trial_steps,
@@ -125,8 +136,8 @@ class RobotClientConfig:
             raise ValueError("control_hz, deadline_ms, image_width, and image_height must be positive")
         if not isinstance(config.instruction, str):
             raise ValueError("instruction must be a string")
-        if not all(isinstance(v, str) and v for v in (config.robot_type, config.adapter, config.evaluation_dir)):
-            raise ValueError("robot_type, adapter and evaluation_dir must be nonempty strings")
+        if not all(isinstance(v, str) and v for v in (config.robot_type, config.evaluation_dir)):
+            raise ValueError("robot_type and evaluation_dir must be nonempty strings")
         if not isinstance(config.api_url, str) or (config.api_url and not config.api_url.startswith(("https://", "http://"))):
             raise ValueError("api_url must use http:// or https://")
         from urllib.parse import urlsplit

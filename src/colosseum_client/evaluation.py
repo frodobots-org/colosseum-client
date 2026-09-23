@@ -349,26 +349,41 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                 local['result'] = {'outcomes': local['outcomes'], 'preference': preference,
                     'feedback': input('Feedback (optional): ').strip() if track == 'open' else ''}
                 save(manifest, local)
-            if config.recording:
-                print('Evaluation complete. Uploading saved recordings.', flush=True)
+            api.request('POST', f"/assignments/{assignment['id']}/result", local['result'])
+            local['submitted'] = True; save(manifest, local)
+            print('Evaluation result submitted.', flush=True)
+            if config.recording and config.skip_upload:
+                print('Dataset upload skipped. Recordings remain local. '
+                      f'Upload later with colosseum-upload-dataset <config> --evaluation-id {assignment["id"]}', flush=True)
+            elif config.recording:
+                print('Uploading saved recordings. The result is already published.', flush=True)
             for run in assignment['runs']:
                 run_path = folder / run['id']
-                if config.recording:
+                if config.recording and not config.skip_upload:
                     dataset = run_path / 'lerobot'
                     # The server checks each object on retry; local flags alone do not prove durability.
-                    api.upload_dataset(run['id'], dataset)
+                    try:
+                        api.upload_dataset(run['id'], dataset)
+                    except (Exception, KeyboardInterrupt) as exc:
+                        print(f'Dataset upload deferred ({type(exc).__name__}). The result is published and recordings remain local. '
+                              f'Retry with colosseum-upload-dataset <config> --evaluation-id {assignment["id"]}', flush=True)
+                        return
                     local.setdefault('datasets_uploaded', {})[run['id']] = True
                     save(manifest, local)
                     print('LeRobot dataset uploaded and verified.', flush=True)
-            api.request('POST', f"/assignments/{assignment['id']}/result", local['result'])
-            local['submitted'] = True; save(manifest, local)
-            print('Videos and result submitted.' if config.recording else 'Evaluation result submitted (recording disabled).')
+            if config.recording and not config.skip_upload:
+                print('Videos and result submitted.')
+            elif not config.recording:
+                print('Evaluation result submitted (recording disabled).')
             if track == 'open' and not yes_no('Continue with the next evaluation?'):
                 return
             assignment = None
     except (Exception, KeyboardInterrupt):
         if 'assignment' in locals() and assignment:
-            print(f"Saved locally. Restart the client to begin a new evaluation; the incomplete evaluation will not be published.")
+            if 'local' in locals() and local.get('submitted'):
+                print('Result already submitted. Recordings remain local for dataset backfill.')
+            else:
+                print('Saved locally. Use --resume to submit this evaluation; a normal restart closes it and starts a new one.')
         raise
     finally:
         api.close()

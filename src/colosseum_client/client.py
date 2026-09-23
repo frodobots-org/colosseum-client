@@ -22,7 +22,7 @@ class ColosseumClient:
         token: str,
         client_id: str,
         *,
-        robot_type: str = "DROID",
+        robot_type: str = "franka",
         joint_count: int = 7,
         has_gripper: bool = True,
         control_hz: int = 15,
@@ -30,6 +30,8 @@ class ColosseumClient:
     ) -> None:
         if not router_url.startswith(("wss://", "ws://")):
             raise ValueError("router_url must use wss:// or ws://")
+        if robot_type in {"DROID", "droid"}:
+            raise ValueError("Use robot_type: franka; DROID is the driver, not a robot type")
         self.router_url = router_url
         self.token = token
         self.client_id = client_id

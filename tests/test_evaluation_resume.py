@@ -7,7 +7,8 @@ from colosseum_client.robot_config import RobotClientConfig
 
 @pytest.mark.parametrize("recording", [True, False])
 @pytest.mark.parametrize("track", ["fine-tuning", "open"])
-def test_failed_upload_resumes_without_reexecuting_or_rescoring(tmp_path, monkeypatch, recording, track):
+@pytest.mark.parametrize("skip_upload", [True, False])
+def test_publish_before_upload_and_resume_failed_submission(tmp_path, monkeypatch, recording, track, skip_upload):
     assignment={'id':'ev_test','recording':recording,'track':track,'robot_id':'franka','state':'pending',
         'task':{'id':'cup-task','instruction':'cup','setup':'start','success_criteria':'placed','partial_success_criteria':'fraction','cameras':['head_image'],'max_steps':1},
         'runs':[{'id':'run_one','side':'trial','state':'assigned'}]}
@@ -44,9 +45,12 @@ def test_failed_upload_resumes_without_reexecuting_or_rescoring(tmp_path, monkey
                 submissions.append(body); return {'state':'completed'}
             return assignment
         def upload_dataset(self, run, path):
+            assert not skip_upload, 'Deferred datasets must not contact the upload API'
             assert recording
             assert (path / "meta/info.json").is_file()
             check_upload_ready()
+            assert submissions == [expected_result]
+            assert json.loads((tmp_path/'ev_test/manifest.json').read_text())['submitted']
             attempts.append(run)
             if len(attempts)==1: raise RuntimeError('network unavailable')
         def upload(self,*args):
@@ -76,19 +80,27 @@ def test_failed_upload_resumes_without_reexecuting_or_rescoring(tmp_path, monkey
     def encode(p, cameras):
         pytest.fail('Standalone review videos must not be encoded')
     monkeypatch.setattr(e.TrialRecorder,'encode',encode)
-    config=RobotClientConfig(url='ws://localhost:8443',token='test',cameras={'head_image':'test'},evaluation_dir=str(tmp_path),recording=recording,instruction='cup',scene='desk')
+    config=RobotClientConfig(url='ws://localhost:8443',token='test',cameras={'head_image':'test'},evaluation_dir=str(tmp_path),recording=recording,skip_upload=skip_upload,instruction='cup',scene='desk')
     answers=iter(['','75','','100','B','saved before upload'] if track == 'open' else ['1','','y','75'])
+    if recording and skip_upload and track == 'open':
+        answers = iter(['','75','','100','B','saved before upload','n'])
     monkeypatch.setattr('builtins.input',lambda _:next(answers))
-    with pytest.raises(RuntimeError,match='network unavailable'):
+    if recording:
         e.run_evaluation(config,track=track)
+    else:
+        with pytest.raises(RuntimeError,match='network unavailable'):
+            e.run_evaluation(config,track=track)
     saved=json.loads((tmp_path/'ev_test/manifest.json').read_text())
     assert saved['outcomes']==expected_outcomes
     assert saved['result']==expected_result
     answers=iter(['n'] if track == 'open' else [])
     monkeypatch.setattr('builtins.input',lambda _:next(answers))
-    e.run_evaluation(config,resume='ev_test')
+    if not recording:
+        e.run_evaluation(config,resume='ev_test')
     assert executions==[run['id'] for run in assignment['runs']]
-    assert attempts==((['run_one','run_one','run_two'] if track == 'open' else ['run_one','run_one']) if recording else ['result','result'])
+    assert attempts==(([] if skip_upload else ['run_one']) if recording else ['result','result'])
+    if skip_upload:
+        assert not saved.get('datasets_uploaded')
     assert submissions==[expected_result]
     assert json.loads((tmp_path/'ev_test/manifest.json').read_text())['submitted']
 

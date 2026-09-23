@@ -23,7 +23,7 @@ def test_robot_config_loads_wss_and_camera_ids(tmp_path):
     assert config.control_hz == 15
 
 
-def test_robot_config_rejects_unknown_camera_name(tmp_path):
+def test_robot_config_accepts_custom_camera_name(tmp_path):
     path = tmp_path / "robot.yaml"
     path.write_text(
         "url: ws://router:8443\n"
@@ -33,8 +33,7 @@ def test_robot_config_rejects_unknown_camera_name(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="camera names"):
-        RobotClientConfig.from_yaml(path)
+    assert RobotClientConfig.from_yaml(path).cameras == {'wrist': '123'}
 
 
 @pytest.mark.parametrize('track,expected', [(1, 'open'), (2, 'fine-tuning')])
@@ -63,19 +62,20 @@ def test_invalid_evaluation_config(tmp_path, setting):
         RobotClientConfig.from_yaml(path)
 
 
-@pytest.mark.parametrize('robot_type,adapter', [('franka','droid'), ('yam','yam')])
-def test_robot_type_selects_identity_and_adapter_default(tmp_path, robot_type, adapter):
+@pytest.mark.parametrize('robot_type', ['franka', 'yam', 'so101', 'g1', 'my_robot'])
+def test_robot_type_is_the_only_selector(tmp_path, robot_type):
     path = tmp_path/'robot.yaml'
     path.write_text(f'url: ws://localhost\ntoken: test\ncameras: {{head_image: "test"}}\nrobot_type: {robot_type}\n')
     c = RobotClientConfig.from_yaml(path)
-    assert c.robot_type == robot_type and c.adapter == adapter
+    assert c.robot_type == robot_type
+    assert not hasattr(c, 'adapter')
 
 
 def test_communication_config_needs_no_cameras(tmp_path):
     path = tmp_path/'test.yaml'
     path.write_text('robot_type: test\nrouter_url: wss://localhost:18443\npolicy_server_url: wss://localhost:18444\ntoken: test\ntrack: 2\n')
     c = RobotClientConfig.from_yaml(path)
-    assert c.robot_type == 'test' and c.adapter == 'test' and c.cameras == {'head_image':'dummy'}
+    assert c.robot_type == 'test' and c.cameras == {'head_image':'dummy'}
 
 
 def test_test_robot_cli_uses_shared_evaluation(tmp_path, monkeypatch):
@@ -120,4 +120,51 @@ def test_recording_defaults_enabled_and_requires_boolean(tmp_path):
             RobotClientConfig.from_yaml(path)
     path.write_text(source + "recording_format: lerobot\n")
     with pytest.raises(ValueError, match="unsupported keys"):
+        RobotClientConfig.from_yaml(path)
+
+
+@pytest.mark.parametrize('setting,message', [
+    ('adapter_config: []', 'adapter_config must'),
+    ('adapter_config: {1: value}', 'adapter_config must'),
+    ('robot_type: DROID', 'Use robot_type: franka'),
+    ('robot_type: droid', 'Use robot_type: franka'),
+    ('adapter: so101', 'unsupported keys'),
+    ('robot_type: []', 'robot_type must'),
+    ('robot_type: ""', 'robot_type must'),
+    ('cameras: {../outside: camera}', 'camera names must'),
+    ('cameras: {1: camera}', 'camera names must'),
+])
+def test_invalid_extension_config(tmp_path, setting, message):
+    path = tmp_path / 'robot.yaml'
+    path.write_text('url: ws://localhost\ntoken: test\ntest: true\n' + setting)
+    with pytest.raises(ValueError, match=message):
+        RobotClientConfig.from_yaml(path)
+
+
+def test_adapter_config_is_separate_from_client_settings(tmp_path):
+    path = tmp_path / 'robot.yaml'
+    path.write_text('''url: ws://localhost
+token: test
+robot_type: custom
+cameras: {wrist_left: camera0}
+adapter_config:
+  address: localhost
+  arms: [left, right]
+''')
+    config = RobotClientConfig.from_yaml(path)
+    assert config.robot_type == 'custom'
+    assert config.adapter_config == {'address': 'localhost', 'arms': ['left', 'right']}
+    assert config.policy_server_url == ''
+
+
+@pytest.mark.parametrize('value', ['1', 'null', '"true"'])
+def test_skip_upload_requires_boolean(tmp_path, value):
+    path = tmp_path / 'robot.yaml'
+    source = 'router_url: ws://localhost:8000\ntoken: example\ntest: true\n'
+    path.write_text(source)
+    assert RobotClientConfig.from_yaml(path).skip_upload is False
+    path.write_text(source + 'skip_upload: true\n')
+    assert RobotClientConfig.from_yaml(path).skip_upload is True
+    path.write_text(source + f'skip_upload: {value}\n')
+    with pytest.raises(ValueError, match='skip_upload must'):
         RobotClientConfig.from_yaml(path)

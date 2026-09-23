@@ -7,7 +7,8 @@ import numpy as np
 
 from . import colosseum_pb2 as pb
 from .client import ColosseumClient, ProtocolError
-from .droid_robot import DroidRobot, RobotObservation
+from .robots.franka import DroidRobot
+from .robot_interface import RobotObservation
 from .diagnostics import read_observation, execute_robot_action
 from .robot_config import RobotClientConfig
 from .tensors import tensor_from_numpy, tensor_to_numpy
@@ -70,6 +71,8 @@ async def run_robot(
     max_control_steps: int | None = None,
     execute_action: bool = True,
 ) -> None:
+    if robot is None and (config.test or config.robot_type != 'franka'):
+        raise ValueError('--inference-only currently supports real franka only; use evaluation mode for other adapters or test: true')
     robot = robot or DroidRobot(
         config.cameras,
         action_space="joint_position",
@@ -79,7 +82,7 @@ async def run_robot(
         config.url,
         config.token,
         client_id="",
-        robot_type="DROID",
+        robot_type="franka",
         joint_count=7,
         has_gripper=True,
         control_hz=config.control_hz,

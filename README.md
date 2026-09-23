@@ -28,6 +28,120 @@ should always use a real robot_type with a separate test flag.
 
 Robot-side client for token-authenticated policy inference through a Colosseum Router.
 
+## Evaluation flow
+
+All robot implementations inherit the `Robot` ABC. The Client shares the
+evaluation, transport and recording loop; each robot implements hardware access,
+and the Policy Server implements model inference.
+
+```mermaid
+flowchart TD
+    Config["Load configs/robot.yaml"] --> Assignment["POST /api/eval/next: Router assigns task and compatible policy"]
+    Assignment --> Factory["Client: make_robot(config)"]
+    Factory --> TestMode{"test: true?"}
+    TestMode -->|Yes| Synthetic["TestRobot: synthetic observations and actions"]
+    TestMode -->|No| Hardware["robot_type selects robots/franka.py, so101.py, yam.py or g1.py"]
+    Hardware --> Implemented{"Hardware driver implemented?"}
+    Implemented -->|No| Unsupported["Stop: NotImplementedError"]
+    Implemented -->|Yes| Ready["Connect policy session; check action contract"]
+    Synthetic --> Ready
+    Ready --> Observe["robot.get_observation(): images and state"]
+    Observe --> NeedChunk{"Need a new action chunk?"}
+    NeedChunk -->|Yes| Route{"Inference mode"}
+    Route -->|Local| Direct["Client connects directly to local Policy Server"]
+    Route -->|Remote| Relay["Router relays observations to Policy Server"]
+    Direct --> Infer["Policy Server: preprocess, infer, decode actions"]
+    Relay --> Infer
+    Infer --> Validate["Client: validate returned action chunk"]
+    Validate --> Record["Record observation and next action when enabled"]
+    NeedChunk -->|No: use remaining actions| Record
+    Record --> Execute{"Action execution enabled?"}
+    Execute -->|Yes| Action["robot.execute(action): validate hardware limits and send SDK command"]
+    Execute -->|No| Skip["Skip hardware action"]
+    Action --> Continue{"Continue trial?"}
+    Skip --> Continue
+    Continue -->|Yes: next control step| Observe
+    Continue -->|No| Close["Close session and recording; robot.close()"]
+    Close --> Results["Upload dataset when enabled; POST /api/eval/assignments/{assignment}/result"]
+```
+
+Franka uses the existing `DroidRobot` implementation in `robots/franka.py`.
+SO101, YAM and G1 are TODO skeletons and currently stop before opening hardware.
+`test: true` bypasses hardware drivers; it does not validate a real robot or
+provide a real model runtime. Policy readiness depends on the selected server.
+`--no-execute-action` still reads the robot and requests inference.
+Once trial resources are initialized, the trial cleanup also runs on errors;
+drivers must clean up their own partially opened resources if construction fails.
+
+### HTTP endpoints used by the Client
+
+The HTTP base URL is derived from `router_url`: `wss://host:port` becomes
+`https://host:port`, and `ws://host:port` becomes `http://host:port`. Set `api_url`
+only when the HTTP API uses a different address. For the example configuration,
+the base URL is `https://191.222.219.43`.
+
+Evaluation requests use the Client token and its bound institution:
+
+```http
+Authorization: Bearer <client-token>
+X-Colosseum-Institution: <URL-encoded institution>
+Content-Type: application/json
+```
+
+The SDK adds these headers automatically (`Content-Type` depends on the body).
+These routes use a Client token, not the admin token. `{assignment}` identifies
+the overall evaluation assignment; `{run_id}` identifies one trial within it.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/api/health` | Service health; no Client authentication required |
+| GET | `/api/eval/tasks?robot_id=so101` | List tasks for Fine-tuning selection; add `&test=true` in test mode |
+| POST | `/api/eval/reset` | Close unfinished assignments owned by this Client before a fresh start; changes state |
+| POST | `/api/eval/next` | Request an assignment using robot, track, cameras and inference mode |
+| GET | `/api/eval/assignments/{assignment}` | Read an assignment when resuming |
+| POST | `/api/eval/runs/{run_id}/finish` | Report trial completion in remote inference mode |
+| POST | `/api/eval/assignments/{assignment}/result` | Submit the evaluation result |
+| POST | `/api/eval/assignments/{assignment}/abort` | Abort an assignment with a reason |
+| POST | `/api/eval/runs/{run_id}/dataset` | Register the LeRobot file manifest: paths, sizes and SHA-256 checksums |
+| POST | `/api/eval/runs/{run_id}/dataset/upload-url?path={encoded_path}` | Obtain an upload target for one dataset file |
+| PUT | `/api/eval/runs/{run_id}/dataset/file?path={encoded_path}` | Upload file bytes when the target storage is local |
+| POST | `/api/eval/runs/{run_id}/dataset/complete` | Verify and finalize the uploaded dataset |
+
+Dataset upload follows **register manifest → request targets → upload files →
+complete**. For S3 storage, the Client PUTs file bytes to the returned presigned
+URL using only its specified headers; it does not forward the Client token to S3.
+The `complete` request still goes to the Router. Already verified files can be
+skipped when resuming.
+
+The separate video-upload helper also uses these routes:
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| POST | `/api/eval/runs/{run_id}/videos/{camera}/upload-url` | Request a video upload target with size and checksum |
+| PUT | `/api/eval/runs/{run_id}/videos/{camera}` | Upload MP4 bytes to local storage |
+| POST | `/api/eval/runs/{run_id}/videos/{camera}/complete` | Verify completion after an S3 video upload |
+
+Observation images, joint states and returned actions travel over **WebSocket /
+Protobuf**, not an HTTP inference endpoint. In local mode,
+`/api/eval/runs/{run_id}/local` is a **WebSocket** route for Router preparation and
+lifecycle reports (including finish); inference uses `policy_server_url`.
+In remote mode, the Client uses the Router WebSocket at `router_url`.
+
+## Integrating another robot
+
+See [Robot adapter integration](docs/robot-adapters.md) for external Python
+packages (entry points selected by `robot_type`), `adapter_config`, custom camera roles
+and the shared configuration example. SO101, YAM and G1 are provided
+as **unimplemented templates**; they do not control hardware. DROID remains the
+existing hardware implementation. Set only `robot_type: franka`, `so101`, `yam`
+or `g1`; no `adapter` selection field is needed.
+
+The shared contract lives in `robot_interface.py`; new hardware implementations
+provide `get_observation()`, `execute(action)` and `close()`. Model loading and
+inference belong to the Policy Server integration. You can prepare a robot
+adapter before its model exists; see the [integration stages](docs/robot-adapters.md#integration-stages-when-inference-is-not-implemented-yet)
+for what can be checked at each stage.
+
 ## DROID robot
 
 The `--inference-only` robot runner follows an open-loop action-chunk cycle: read RobotEnv, send the
@@ -65,7 +179,7 @@ client = ColosseumClient(
     router_url,
     token,
     client_id="robot-01",
-    robot_type="DROID",
+    robot_type="franka",
     joint_count=7,
     has_gripper=True,
     control_hz=15,
@@ -114,7 +228,7 @@ with an explicit error instead of silently dropping evidence or stalling control
 Incomplete recordings cannot be encoded by the upload flow.
 
 Older diagnostic trials with `recording-disabled.json` still have no video; use
-a normal restart to close those assignments automatically. Explicit `--resume` can retry pending uploads before starting a new evaluation.
+a normal restart to close those assignments automatically. Explicit `--resume` can submit saved results before starting a new evaluation; use `colosseum-upload-dataset` for deferred uploads.
 
 Choose `1` for Open Track or `2` for Fine-tuning. Open requests a task instruction,
 executes server-assigned A, asks for its partial success (0–100), then prompts to
@@ -130,9 +244,9 @@ normally; the older `--inference-only` runner retains its existing temporary wor
 
 The server must have task protocols and policy deployments configured first; see the
 router's `EVALUATION.md`. Starting with an empty server produces a no-assignment message,
-not invented tasks/models. Use `robot_type: franka` and `adapter: droid` for the existing
+not invented tasks/models. Use `robot_type: franka` for the existing
 Franka/DROID hardware bridge. A standalone Franka without DROID/R2D2 is not yet supported.
-`adapters.py` defines the observation, action and dimension interface for future robot
+`robot_interface.py` defines the observation, action and dimension interface for future robot
 backends; adding a YAML robot name alone does not implement its hardware control.
 
 Optional command-line shortcuts:
@@ -161,15 +275,16 @@ control rate on the real robot. LeRobot MP4s align one frame per recorded action
 the configured control FPS; capture timestamps preserve actual inference pauses.
 
 The local `manifest.json` records scores, uploaded cameras, and pending final submission.
-An upload or submission failure can be resumed without reexecuting a finished trial or
-asking for scores again. Source PNGs, timing records, MP4s, and the manifest are retained.
+A result submission failure can be resumed without reexecuting a finished trial or
+asking for scores again. After publication, retry failed dataset uploads with
+`colosseum-upload-dataset configs/robot.yaml --evaluation-id <evaluation-id>`. Source PNGs, timing records, MP4s, and the manifest are retained.
 Starting the client normally always starts a fresh evaluation: it automatically
 closes any previous unfinished assignment owned by the same token, including
 runs left behind by Ctrl-C, connection loss or a killed process. No manual abort
 is required. Completed results are unchanged. Unfinished evaluations stay hidden
 from public review and do not consume completed-trial capacity. Local recordings
 remain available. Explicit `--resume` still retries a pending finished trial's
-uploads/results before a fresh start; it cannot revive a replaced assignment.
+result submission before a fresh start; it cannot revive a replaced assignment.
 
 
 The end-to-end tests use simulated hardware and real local HTTP/WebSocket/ffmpeg video
@@ -241,10 +356,10 @@ Policy Server, and leaves the assignment unexecuted. See
 ### Robot type and a hardware-free local test
 
 Set `robot_type: franka` or `robot_type: yam`. The type is passed to Router for task
-and deployment selection. Omitted adapter defaults to `droid` for Franka and `yam`
-for YAM; the YAM hardware adapter is not yet installed. Receipt-only WSS verification
-supports either type without instantiating any robot or assuming its action dimensions.
-Legacy `robot_type: DROID` remains accepted.
+and deployment selection, and selects the local robot implementation directly.
+YAM remains a TODO hardware implementation. Receipt-only WSS verification supports
+either type without instantiating any robot or assuming its action dimensions.
+Use `franka`, not the removed `DROID` robot type; remove any `adapter:` field.
 
 From the workspace root, run the automated local test:
 
@@ -364,11 +479,13 @@ During each trial, a background writer saves image frames and state/action
 records locally. After that trial finishes and its score is saved, the Client
 finalizes its LeRobot dataset before starting the next model. Only uploads wait
 until all trials, scores, A/B preference and feedback are complete. Files are
-then uploaded sequentially before final result submission. Until that upload
-phase, recordings exist only on the Client machine. Completed exports are
-validated and reused on resume, and failed exports can be retried. Source
-PNG/JSONL recordings remain available. The complete dataset is uploaded before
-result submission. Web review reuses the dataset's videos, so LeRobot mode does
+uploaded sequentially after result submission. Scores are published even if the
+dataset upload fails or is interrupted; playback becomes available after upload
+and verification. Until then, recordings remain on the Client machine. Completed
+exports are validated and reused on resume, and failed exports can be retried.
+Source PNG/JSONL recordings remain available. This requires a Router version that
+accepts results without recordings; update the Router before the Client.
+Web review reuses the dataset's videos, so LeRobot mode does
 not encode or upload separate review MP4s. With Router S3 storage
 enabled, files go directly to the private bucket using signed URLs; the Router
 verifies every file's size and SHA-256 before publishing replay. Failed uploads
@@ -388,6 +505,20 @@ Normal usage is unchanged:
 ```bash
 uv run colosseum-robot configs/robot.yaml
 ```
+
+To submit scores while keeping recordings locally for manual upload, set in
+`configs/robot.yaml`:
+
+```yaml
+recording: true
+skip_upload: true
+```
+
+Start the Client normally. `skip_upload` defaults to `false`; setting it to
+`true` skips automatic dataset uploads for new and resumed evaluations. Scores
+still go to the Router and appear in review without playback. The Router must
+support publishing results without datasets. Manual `colosseum-upload-dataset`
+commands still upload even when `skip_upload` is `true`.
 
 To upload an already exported dataset without rerunning the robot or changing
 its score, use the same owner token and institution:

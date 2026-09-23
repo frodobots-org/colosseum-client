@@ -7,7 +7,7 @@ from colosseum_client import ColosseumClient
 
 def test_client_registers_default_robot_spec():
     client = ColosseumClient("ws://router:8443", "clt_test", "robot-1")
-    assert client.robot_spec.robot_type == "DROID"
+    assert client.robot_spec.robot_type == "franka"
     assert client.robot_spec.joint_count == 7
     assert client.robot_spec.has_gripper
     assert client.robot_spec.control_hz == 15
@@ -40,3 +40,9 @@ def test_client_rejects_invalid_robot_spec():
         ColosseumClient("ws://router:8443", "clt_test", "robot", joint_count=0)
     with pytest.raises(ValueError, match="action_spaces"):
         ColosseumClient("ws://router:8443", "clt_test", "robot", action_spaces={"joint_position": 0})
+
+
+@pytest.mark.parametrize("robot_type", ["DROID", "droid"])
+def test_driver_name_is_not_a_robot_identity(robot_type):
+    with pytest.raises(ValueError, match="Use robot_type: franka"):
+        ColosseumClient("ws://router:8443", "clt_test", "robot-1", robot_type=robot_type)

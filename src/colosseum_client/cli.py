@@ -73,7 +73,7 @@ def main() -> None:
     parser.add_argument("--policy-id", default="demo-zero")
     parser.add_argument("--instruction", default="demo instruction")
     parser.add_argument("--deadline-ms", type=int, default=1000)
-    parser.add_argument("--robot-type", default="DROID")
+    parser.add_argument("--robot-type", default="franka")
     parser.add_argument("--joint-count", type=int, default=7)
     parser.add_argument("--control-hz", type=int, default=15)
     parser.add_argument("--no-gripper", action="store_true")
