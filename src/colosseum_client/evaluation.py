@@ -53,11 +53,13 @@ def trial_cameras(config, task):
 
 class EvalAPI:
     def __init__(self, config):
+        self.config = config
         self.client = httpx.Client(base_url=api_url(config).rstrip('/'),
             headers={'Authorization': f'Bearer {config.token}', 'X-Colosseum-Institution': quote(config.institution.strip(),safe='')}, timeout=30, trust_env=False, verify=ssl.create_default_context())
 
     def request(self, method, path, body=None):
-        response = self.client.request(method, '/api/eval' + path, json=body)
+        response = self.client.request(method, '/api/eval' + path, json=body,
+            timeout=1800 if path.endswith('/dataset/complete') else 30)
         if response.status_code == 409:
             detail = response.json().get('detail', '')
             if detail.startswith(('No trial available', 'No pair available')):
@@ -101,6 +103,12 @@ class EvalAPI:
                 files.append({'path': path.relative_to(root).as_posix(),
                               'size': path.stat().st_size, 'checksum_sha256': checksum})
         route = f'/runs/{run_id}/dataset'
+        if getattr(getattr(self, 'config', None), 'dataset_url', ''):
+            from .hub_upload import upload_episode
+            source = upload_episode(self.config, run_id, root, files, self.request)
+            self.request('POST', route, {'files': files, 'source': source})
+            self.request('POST', route + '/complete')
+            return
         self.request('POST', route, {'files': files})
         for index, file in enumerate(files, 1):
             query = '?path=' + quote(file['path'], safe='')

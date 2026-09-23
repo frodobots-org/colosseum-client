@@ -31,4 +31,12 @@ cameras: {}
 # control_hz: 15 # Must match the real robot controller and assigned model
 # api_url: "" # Derived from router_url when empty
 # evaluation_dir: eval_runs
+# Optional direct upload to your PUBLIC dataset (install the selected SDK extra):
+# ModelScope: `uv sync --extra modelscope` plus Git; Hugging Face: `uv sync --extra huggingface`
+# dataset_url: https://modelscope.cn/datasets/YOUR_ACCOUNT/YOUR_DATASET
+# Or dataset_url: https://huggingface.co/datasets/YOUR_ACCOUNT/YOUR_DATASET
+# dataset_token: YOUR_WRITE_TOKEN_FOR_THE_SELECTED_PLATFORM
+# Alternatively omit dataset_token and set DATASET_TOKEN (or MODELSCOPE_API_TOKEN / HF_TOKEN),
+# or use dataset_token_file (relative to this YAML file). Credentials stay on Client.
+# dataset_token_file: secrets/dataset-token
 # adapter_config: {} # Adapter-specific connection/calibration settings

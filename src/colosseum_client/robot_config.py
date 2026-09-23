@@ -28,6 +28,9 @@ class RobotClientConfig:
     evaluation_dir: str = "eval_runs"
     recording: bool = True
     skip_upload: bool = False
+    dataset_url: str = ""
+    dataset_token: str = field(default="", repr=False)
+    dataset_token_file: str = ""
     max_trial_steps: int = 2700
     instruction: str = ""
     control_hz: int = 15
@@ -36,6 +39,17 @@ class RobotClientConfig:
     image_height: int = 288
 
     def __post_init__(self) -> None:
+        from .hub_upload import dataset_target
+        if not isinstance(self.dataset_url, str):
+            raise ValueError('dataset_url must be a string')
+        if self.dataset_url:
+            dataset_target(self.dataset_url)
+        if not isinstance(self.dataset_token, str) or not isinstance(self.dataset_token_file, str):
+            raise ValueError('Dataset token and token file must be strings')
+        if self.dataset_token and self.dataset_token_file:
+            raise ValueError('Use either dataset_token or dataset_token_file')
+        if (self.dataset_token or self.dataset_token_file) and not self.dataset_url:
+            raise ValueError('Dataset credentials require dataset_url')
         if self.robot_type in {"DROID", "droid"}:
             raise ValueError("Use robot_type: franka; DROID is the driver, not a robot type")
         if self.adapter is not None and (self.adapter != "droid" or self.robot_type != "franka"):
@@ -68,7 +82,7 @@ class RobotClientConfig:
         allowed = {
             "institution", "test", "use_local_action_contract", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
             "robot_type", "adapter", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
-            "url",
+            "url", "dataset_url", "dataset_token", "dataset_token_file",
             "token",
             "cameras",
             "instruction",
@@ -124,6 +138,11 @@ class RobotClientConfig:
             evaluation_dir=value.get("evaluation_dir", "eval_runs"),
             recording=value.get("recording", True),
             skip_upload=value.get("skip_upload", False),
+            dataset_url=value.get("dataset_url", ""),
+            dataset_token=value.get("dataset_token", ""),
+            dataset_token_file=(str((Path(path).resolve().parent / Path(value["dataset_token_file"]).expanduser()).resolve())
+                if isinstance(value.get("dataset_token_file"), str) and value["dataset_token_file"]
+                else value.get("dataset_token_file", "")),
             max_trial_steps=value.get("max_trial_steps", 2700),
             instruction=value.get("instruction", ""),
             control_hz=value.get("control_hz", 15),

@@ -19,6 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+modelscope = ["modelscope-hub>=0.4.5,<0.5"]
+huggingface = ["huggingface-hub>=1.0,<2"]
 dev = ["grpcio-tools>=1.66", "pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]

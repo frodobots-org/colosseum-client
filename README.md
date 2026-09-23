@@ -297,6 +297,49 @@ The client computes SHA-256, uploads the bytes without forwarding its Colosseum 
 then requests server verification. An uploaded camera is marked complete in the local
 manifest only after verification. Local storage mode continues to upload to the router.
 
+### Upload to your own dataset
+
+Use the same configuration for a public ModelScope or Hugging Face dataset.
+The HTTPS URL selects the provider; `url`/`router_url` still identifies the Router.
+
+```yaml
+dataset_url: https://modelscope.cn/datasets/YOUR_ACCOUNT/YOUR_DATASET
+# Or: https://huggingface.co/datasets/YOUR_ACCOUNT/YOUR_DATASET
+dataset_token: YOUR_WRITE_TOKEN_FOR_THAT_PLATFORM
+```
+
+Install the selected SDK with `uv sync --extra modelscope` or
+`uv sync --extra huggingface` (pip equivalents: `pip install '.[modelscope]'`
+or `pip install '.[huggingface]'`). ModelScope also requires Git.
+Create the dataset before uploading. Both providers currently require a public,
+ungated repository. The token must belong to the selected platform; tokens are
+not interchangeable between ModelScope and Hugging Face.
+
+Alternatively, omit `dataset_token` and use `dataset_token_file: secrets/dataset-token`
+(resolved relative to the YAML file), or `DATASET_TOKEN` in the environment.
+Provider-specific environment variables `MODELSCOPE_API_TOKEN` and `HF_TOKEN` are
+also supported as fallbacks. Use only one explicit token source. Do not commit
+credential files. The dataset token stays on Client and is never sent to Router.
+
+With `dataset_url` configured, automatic uploads and `colosseum-upload-dataset`
+upload directly to that provider instead of S3/the Router. Each run is stored at
+`episodes/{assignment_id}/{run_id}/lerobot/`. `skip_upload: true` still defers
+automatic uploads; the manual command uses these same dataset settings.
+Leaving `dataset_url` unset retains the original upload behavior. The earlier
+unreleased `modelscope_dataset_url`/`modelscope_token`/`modelscope_token_file`
+configuration names are replaced by these generic fields.
+
+Client reports the provider, repository and fixed commit to Router. Router
+anonymously verifies every file's size/checksum and LeRobot identity before making
+footage available through existing review APIs. This requires the updated Router;
+old servers reject the preflight before uploading. Files become public on the
+selected hub as soon as uploaded and must remain available for playback.
+
+`dataset-upload.json` beside the run's `lerobot/` directory saves a receipt without
+credentials. If Router verification fails, rerun the manual upload command to retry
+that same revision. Changed content, a different provider, or an already registered
+S3/local dataset is rejected; this feature does not migrate registered datasets.
+
 For Fine-tuning, select a predefined task from the server-provided menu after choosing
 the track. Only tasks for this robot with remaining trials (or your pending trial)
 are listed. The server selects the model; successful rounds continue on the same task.
