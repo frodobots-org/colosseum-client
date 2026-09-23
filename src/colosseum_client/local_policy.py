@@ -12,6 +12,7 @@ from websockets.asyncio.client import connect
 
 from .local_protocol import encode_control, decode_control
 from .timeouts import timeout
+from .diagnostics import close_resources
 
 from .client import ColosseumClient, ProtocolError
 from . import colosseum_pb2 as pb
@@ -53,6 +54,8 @@ class LocalPolicyClient(ColosseumClient):
         self.use_local_action_contract = config.use_local_action_contract
         self.inference_timeout = config.deadline_ms / 1000
         self.prepare_timeout = config.prepare_timeout
+        self.policy_ping_interval = config.policy_ping_interval
+        self.policy_ping_timeout = config.policy_ping_timeout
         self.control = None
         self.control_lock = asyncio.Lock()
         self.heartbeat_task = None
@@ -85,7 +88,8 @@ class LocalPolicyClient(ColosseumClient):
         simulate = False
         # Router credentials never travel to the local service.
         self.connection = await connect(self.router_url, proxy=None, open_timeout=10,
-            compression=None, max_size=32 * 1024 * 1024, ping_interval=10, ping_timeout=10)
+            compression=None, max_size=32 * 1024 * 1024,
+            ping_interval=self.policy_ping_interval, ping_timeout=self.policy_ping_timeout)
         if send_dummy or simulate:
             preparation = {**preparation, "state":"simulate", "verification_only":True}
         await self.connection.send(encode_control(preparation))
@@ -235,7 +239,8 @@ class LocalPolicyClient(ColosseumClient):
                 if frame.type == pb.ERROR:
                     error = pb.Error.FromString(frame.payload)
                     message = error.message.strip()
-                    raise ProtocolError(f'Local inference failed: {error.code}{": " + message if message else ""}')
+                    code = error.code.strip() or 'LOCAL_POLICY_ERROR'
+                    raise ProtocolError(f'Local inference failed: {code}{": " + message if message else ""}')
                 if frame.type != pb.ACTION_PLAN:
                     raise ProtocolError('Invalid local inference frame')
                 self.incoming.put_nowait(frame)
@@ -258,8 +263,10 @@ class LocalPolicyClient(ColosseumClient):
         return frame
 
     def ensure_active(self):
-        if self.failure or not self.session_id:
-            raise ProtocolError('Local Trial connection is not active') from self.failure
+        if self.failure is not None:
+            raise ProtocolError(f'Local Trial connection is not active: {self.failure}') from self.failure
+        if not self.session_id:
+            raise ProtocolError('Local Trial connection is not active')
 
     async def _control(self, kind, expected, **fields):
         self.ensure_active()
@@ -340,8 +347,7 @@ class LocalPolicyClient(ColosseumClient):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-        try:
-            await super().close()
-        finally:
-            if self.control:
-                await self.control.close()
+        resources = [('Policy connection', super().close)]
+        if self.control:
+            resources.append(('Router control connection', self.control.close))
+        await close_resources(resources)

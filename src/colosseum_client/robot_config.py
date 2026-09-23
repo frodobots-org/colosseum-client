@@ -18,6 +18,8 @@ class RobotClientConfig:
     evaluator: str = ""
     track: str = ""
     policy_server_url: str = ""
+    policy_ping_interval: int = 20
+    policy_ping_timeout: int = 60
     prepare_timeout: int = 1800
     test: bool = False
     use_local_action_contract: bool = False
@@ -39,6 +41,9 @@ class RobotClientConfig:
     image_height: int = 288
 
     def __post_init__(self) -> None:
+        for name in ('policy_ping_interval', 'policy_ping_timeout'):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f'{name} must be a positive integer in seconds')
         from .hub_upload import dataset_target
         if not isinstance(self.dataset_url, str):
             raise ValueError('dataset_url must be a string')
@@ -80,6 +85,7 @@ class RobotClientConfig:
         if value.get("test", False):
             value.setdefault("cameras", {})
         allowed = {
+            "policy_ping_interval", "policy_ping_timeout",
             "institution", "test", "use_local_action_contract", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
             "robot_type", "adapter", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
             "url", "dataset_url", "dataset_token", "dataset_token_file",
@@ -128,6 +134,8 @@ class RobotClientConfig:
             evaluator=value.get("evaluator", ""),
             track=value["track"],
             policy_server_url=value["policy_server_url"],
+            policy_ping_interval=value.get("policy_ping_interval", cls.policy_ping_interval),
+            policy_ping_timeout=value.get("policy_ping_timeout", cls.policy_ping_timeout),
             prepare_timeout=value.get("prepare_timeout", 1800),
             robot_type=robot_type,
             test=value.get("test", False),

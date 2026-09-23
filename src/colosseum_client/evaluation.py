@@ -20,9 +20,10 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from .adapters import make_robot
-from .diagnostics import read_observation, execute_robot_action
+from .diagnostics import read_observation, execute_robot_action, close_resources
 from .client import ColosseumClient, ProtocolError
 from .recording import TrialRecorder
+from .http_diagnostics import log_http_error
 from .robot_runner import action_chunk, protobuf_observation
 
 
@@ -54,6 +55,7 @@ def trial_cameras(config, task):
 class EvalAPI:
     def __init__(self, config):
         self.config = config
+        self.log_dir = Path(config.evaluation_dir)
         self.client = httpx.Client(base_url=api_url(config).rstrip('/'),
             headers={'Authorization': f'Bearer {config.token}', 'X-Colosseum-Institution': quote(config.institution.strip(),safe='')}, timeout=30, trust_env=False, verify=ssl.create_default_context())
 
@@ -65,7 +67,8 @@ class EvalAPI:
             if detail.startswith(('No trial available', 'No pair available')):
                 raise NoAssignment(detail)
         if response.is_error:
-            raise RuntimeError(f'Evaluation API {response.status_code}: {response.text}')
+            reason = log_http_error(response, operation='Evaluation API', log_dir=self.log_dir)
+            raise RuntimeError(f'Evaluation API {response.status_code}: {reason}')
         return response.json()
 
     def upload(self, run_id, camera, path):
@@ -80,13 +83,15 @@ class EvalAPI:
             with path.open('rb') as source:
                 response = self.client.put('/api/eval' + route, content=source,
                     headers={'Content-Type': 'video/mp4'}, timeout=300)
-            response.raise_for_status()
+            if response.is_error:
+                log_http_error(response, operation='Local video upload', log_dir=getattr(self, 'log_dir', None))
+                raise RuntimeError(f'Local video upload failed ({response.status_code}); resume to retry')
         elif target['storage'] == 's3':
             # Separate HTTP client: never forward the Colosseum bearer token to S3.
             with httpx.Client(timeout=300, trust_env=False) as upload_client, path.open('rb') as source:
                 response = upload_client.put(target['url'], content=source, headers=target['headers'])
             if response.status_code not in {200, 201, 204, 412}:
-                # Do not log the presigned URL (it grants temporary object access).
+                log_http_error(response, operation='S3 video upload', log_dir=getattr(self, 'log_dir', None))
                 raise RuntimeError(f'S3 upload failed ({response.status_code}); resume to retry')
             # 412 may mean a prior upload succeeded but its response was lost.
             self.request('POST', route + '/complete')
@@ -124,12 +129,15 @@ class EvalAPI:
                     except httpx.HTTPError:
                         raise RuntimeError('Dataset S3 connection failed; resume to retry') from None
                 if response.status_code not in {200, 201, 204, 412}:
+                    log_http_error(response, operation='Dataset S3 upload', log_dir=getattr(self, 'log_dir', None))
                     raise RuntimeError(f'Dataset S3 upload failed ({response.status_code}); resume to retry')
             elif target['storage'] == 'local':
                 with path.open('rb') as source:
                     response = self.client.put('/api/eval' + route + '/file' + query, content=source,
                                                headers={'Content-Type': 'application/octet-stream'}, timeout=600)
-                response.raise_for_status()
+                if response.is_error:
+                    log_http_error(response, operation='Dataset local upload', log_dir=getattr(self, 'log_dir', None))
+                    raise RuntimeError(f'Dataset local upload failed ({response.status_code}); resume to retry')
             else:
                 raise RuntimeError('Unknown dataset storage mode')
         self.request('POST', route + '/complete')
@@ -214,7 +222,9 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     'robot_type': config.robot_type, 'fps': config.control_hz,
                     'action_space': robot.action_space_name,
                     'execution_enabled': execute_action, 'test': config.test})
-                recorder = TrialRecorder(path, trial_cameras(config, task))
+                record_cameras = trial_cameras(config, task)
+                print(f"Recording cameras: {record_cameras} (Router task cameras: {task['cameras']})", flush=True)
+                recorder = TrialRecorder(path, record_cameras)
             print('Trial started. Press Enter to finish, or Ctrl-C to interrupt.')
             print('Recording enabled: frames are written by a background worker.' if recorder is not None
                   else 'Recording disabled.', flush=True)
@@ -255,15 +265,12 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             else:
                 await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
         finally:
-            try:
-                await client.close()
-            finally:
-                try:
-                    if robot is not None:
-                        await robot_call(robot.close)
-                finally:
-                    if recorder is not None:
-                        await asyncio.to_thread(recorder.close)
+            resources = [('Client', client.close)]
+            if robot is not None:
+                resources.append(('Robot', partial(robot_call, robot.close)))
+            if recorder is not None:
+                resources.append(('Recorder', partial(asyncio.to_thread, recorder.close)))
+            await close_resources(resources)
 
 
 def select_task(api, robot, test=False):
@@ -314,6 +321,8 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                     except NoAssignment as exc:
                         print(str(exc)); return
                 instruction = (config.instruction or input('Instruction: ').strip()) if track == 'open' else ''
+                if track == 'open' and not instruction.strip():
+                    raise ValueError('instruction cannot be empty')
                 scene = config.scene or (input('Scene / setup: ').strip() if track == 'open' else '')
                 mode = 'local' if config.policy_server_url else 'remote'
                 try:

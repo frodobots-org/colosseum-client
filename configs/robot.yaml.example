@@ -7,6 +7,8 @@ robot_type: franka # franka | so101 | yam | g1; selects the robot implementation
 # SO101, YAM and G1 are TODOs: real mode requires implementing their drivers first.
 test: true # true = dummy data; false = real robot data
 policy_server_url: ws://localhost:8000 # Local Policy Server; null = remote inference
+policy_ping_interval: 20 # Local policy WebSocket ping interval, seconds
+policy_ping_timeout: 60 # Seconds to wait for pong; inference still uses deadline_ms
 track: 1 # 1 = Open, 2 = Fine-tuning
 scene: office
 evaluator: local-tester

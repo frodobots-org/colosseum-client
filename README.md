@@ -358,6 +358,8 @@ scene: kitchen_01
 evaluator: operator_01
 track: 1 # 1 = Open, 2 = Fine-tuning
 policy_server_url: null # or wss://local-policy.example.com:8000
+policy_ping_interval: 20 # Local Policy WebSocket keepalive interval, seconds
+policy_ping_timeout: 60 # Pong timeout, seconds; does not change deadline_ms
 ```
 
 Keep the existing `cameras`, `robot_type`, adapter and control settings in that same
@@ -368,8 +370,7 @@ Fine-tuning asks for the task. Scoring remains interactive. Scene/evaluator are 
 on Router and in the local assignment manifest; evaluator text does not replace token
 ownership. The Router must be upgraded alongside Client for the new request fields.
 
-With `policy_server_url` set, Client queries supported runtime profiles over WS(S),
-then Router chooses the model. Client receives its HF link and pinned revision from
+With `policy_server_url` set, Router chooses the model. Client receives its HF link and pinned revision from
 Router and prepares the model through the local WS connection. Observations/actions
 travel directly to the local service. Recordings start after readiness, and each
 new Trial must reset local model state. Local inference requires evaluation mode;
@@ -380,11 +381,24 @@ available by omitting the local URL. Model loading timeout defaults to 1800 seco
 and can be shortened with `prepare_timeout`. WSS verifies server certificates normally.
 The Router token is sent only to Router. This version has no local token setting.
 
+Both policy keepalive settings must be positive integers. They apply only to the
+local Policy Server connection; inference still uses `deadline_ms`, and Router
+lifecycle heartbeats remain unchanged. See
+[`configs/robot.open-local-eval.yaml.example`](configs/robot.open-local-eval.yaml.example)
+for a synthetic local evaluation configuration. Open Track rejects blank instructions.
+
+Local inference failures retain the Policy Server's error code and message and
+stop further actions. Cleanup attempts the Client, robot and recorder even if one
+close fails; a cleanup failure does not replace an existing trial error.
+Failed HTTP responses print a diagnostic and save a private `http-error-*.json`
+under `evaluation_dir`. These contain the operation, status, standard HTTP reason
+and supported request IDs, without response bodies, URLs or authentication headers.
+
 The local server must implement [Local inference protocol v1](../colosseum-router/docs/local-policy.md).
 The existing Policy Server outbound SDK does not yet implement this inbound protocol.
 Client/Router are implemented and mock-tested; a real model-serving implementation
-and hardware validation are still needed. Each action currently waits for a Router
-control acknowledgment, so WAN latency can limit the control rate.
+and hardware validation are still needed. Lifecycle reports are queued in the
+background; finishing a trial waits for Router confirmation before continuing.
 
 ### Verify WSS model delivery without a robot
 

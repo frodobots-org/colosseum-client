@@ -76,8 +76,9 @@ async def test_simulation_inference_deadline():
         await c._simulate({'preparation_id':'p'})
 
 
+@pytest.mark.parametrize('ping', [(20, 60), (7, 15)])
 @pytest.mark.parametrize('receipt', [False, True])
-async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt):
+async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, ping):
     from colosseum_client.local_protocol import encode_control, decode_control
     from colosseum_client import local_policy
     c = client()
@@ -109,7 +110,11 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt):
         async def __anext__(self):
             await asyncio.Event().wait()
     connections = iter([Router(),Policy()])
-    async def connect(*args,**kwargs):return next(connections)
+    c.policy_ping_interval, c.policy_ping_timeout = ping
+    async def connect(*args, **kwargs):
+        if args[0] == c.router_url:
+            assert (kwargs['ping_interval'], kwargs['ping_timeout']) == ping
+        return next(connections)
     monkeypatch.setattr(local_policy,'connect',connect)
     async def capabilities(*args,**kwargs):
         raise AssertionError('Preparation must not query policy capabilities')
@@ -154,3 +159,51 @@ async def test_control_error_keeps_code_and_message():
             return frame.SerializeToString()
     with pytest.raises(ProtocolError, match='MODEL_START_FAILED: launcher failed'):
         await local_policy.receive_control(Connection())
+
+
+async def test_protobuf_error_frame_preserves_code_and_message():
+    c = client()
+    error = pb.Error(code='INFERENCE_FAILED', message='sanitized backend failure')
+    class Connection:
+        sent = False
+        def __aiter__(self): return self
+        async def __anext__(self):
+            if self.sent: raise StopAsyncIteration
+            self.sent = True
+            return pb.RelayFrame(protocol_version=1, type=pb.ERROR, session_id=c.run_id,
+                payload=error.SerializeToString()).SerializeToString()
+    c.connection = Connection()
+    await c._receive()
+    with pytest.raises(ProtocolError, match='INFERENCE_FAILED: sanitized backend failure'):
+        await c._expect(pb.ACTION_PLAN)
+
+
+async def test_error_blocks_queued_and_cached_actions():
+    c = client()
+    c.failure = ProtocolError('INFERENCE_FAILED: backend failure')
+    c.incoming.put_nowait(pb.RelayFrame(protocol_version=1, session_id=c.run_id, type=pb.ACTION_PLAN))
+    with pytest.raises(ProtocolError, match='INFERENCE_FAILED: backend failure'):
+        await c._expect(pb.ACTION_PLAN)
+    assert c.incoming.qsize() == 1
+    with pytest.raises(ProtocolError, match='INFERENCE_FAILED: backend failure'):
+        await c.before_action(1)
+    assert c.reports.empty()
+
+
+async def test_local_close_attempts_both_connections():
+    c = client()
+    events = []
+    class Policy:
+        async def send(self, raw): pass
+        async def close(self):
+            events.append('policy')
+            raise RuntimeError('policy close failed')
+    class Router:
+        async def close(self):
+            events.append('router')
+            raise ValueError('router close failed')
+    c.connection, c.control = Policy(), Router()
+    with pytest.raises(RuntimeError, match='policy close failed'):
+        await c.close()
+    assert events == ['policy', 'router']
+    assert not c.session_id and c.connection is None
