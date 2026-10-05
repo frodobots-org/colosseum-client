@@ -49,6 +49,7 @@ class LocalPolicyClient(ColosseumClient):
         self.router_token = config.token
         self.institution = config.institution.strip()
         self.test_robot = config.test or config.robot_type == "test"
+        self.hardware_robot_type = config.robot_type
         self.use_local_action_contract = config.use_local_action_contract
         self.inference_timeout = config.deadline_ms / 1000
         self.prepare_timeout = config.prepare_timeout
@@ -92,7 +93,8 @@ class LocalPolicyClient(ColosseumClient):
             preparation = {**preparation, "state":"simulate", "verification_only":True}
         from .llm_credentials import local_preparation
         await self.connection.send(encode_control(
-            local_preparation(preparation, self.llm_api_keys, self.router_url)))
+            local_preparation({**preparation, 'robot_type': self.hardware_robot_type},
+                              self.llm_api_keys, self.router_url)))
         async with timeout(self.prepare_timeout):
             while True:
                 ready = await receive_control(self.connection, self.prepare_timeout)

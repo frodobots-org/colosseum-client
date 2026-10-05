@@ -24,7 +24,7 @@ Install first, then run:
 
 ```bash
 uv sync --extra <robot_type>
-uv run --no-sync colosseum-robot configs/robot.yaml
+.venv/bin/colosseum-robot configs/robot.yaml
 ```
 
 Or install and run in one command:

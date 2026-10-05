@@ -106,6 +106,8 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, p
         async def send(self,raw):
             message = decode_control(raw)
             assert message['type'] == 'prepare' and message['test'] is False
+            assert message['robot_type'] == c.hardware_robot_type
+            assert 'robot_type' not in preparation  # Router preparation is unchanged.
             assert message.get('state') != 'simulate'
         def __aiter__(self): return self
         async def __anext__(self):
