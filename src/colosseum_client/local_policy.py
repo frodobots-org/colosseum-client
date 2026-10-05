@@ -30,16 +30,13 @@ async def receive_control(connection, timeout=30):
     return value
 
 
-async def capabilities(url, *, details=False):
+async def capabilities(url):
     async with connect(url, proxy=None, open_timeout=10, max_size=65536) as connection:
         await connection.send(encode_control(dict(type='capabilities', protocol_version=1)))
         reply = await receive_control(connection)
-        profiles = reply.get('runtime_profiles')
-        if (reply.get('type') != 'capabilities' or reply.get('protocol_version') != 1
-                or not isinstance(profiles, list) or not profiles or len(profiles) > 100
-                or any(not isinstance(p, str) or not p or len(p) > 100 for p in profiles)):
+        if reply.get('type') != 'capabilities' or reply.get('protocol_version') != 1:
             raise ProtocolError('Invalid local runtime capabilities')
-        return reply if details else profiles
+        return reply
 
 
 class LocalPolicyClient(ColosseumClient):
@@ -48,6 +45,7 @@ class LocalPolicyClient(ColosseumClient):
         parts = urlsplit(api_base)
         self.control_base = urlunsplit(('wss' if parts.scheme == 'https' else 'ws', parts.netloc,
                                        parts.path.rstrip('/'), '', ''))
+        self.llm_api_keys = dict(getattr(config, "llm_api_keys", {}))
         self.router_token = config.token
         self.institution = config.institution.strip()
         self.test_robot = config.test or config.robot_type == "test"
@@ -92,7 +90,9 @@ class LocalPolicyClient(ColosseumClient):
             ping_interval=self.policy_ping_interval, ping_timeout=self.policy_ping_timeout)
         if send_dummy or simulate:
             preparation = {**preparation, "state":"simulate", "verification_only":True}
-        await self.connection.send(encode_control(preparation))
+        from .llm_credentials import local_preparation
+        await self.connection.send(encode_control(
+            local_preparation(preparation, self.llm_api_keys, self.router_url)))
         async with timeout(self.prepare_timeout):
             while True:
                 ready = await receive_control(self.connection, self.prepare_timeout)
@@ -137,7 +137,8 @@ class LocalPolicyClient(ColosseumClient):
                     effective = extra.get('effective_model', ready.get('effective_model'))
                     if (not isinstance(effective, dict)
                             or effective.get('url') != self.router_model.get('url')
-                            or effective.get('revision') != self.router_model.get('revision')):
+                            or effective.get('revision') != self.router_model.get('revision')
+                            or effective.get('subfolder', '') != self.router_model.get('subfolder', '')):
                         raise ProtocolError('Local effective model identity mismatch')
                     if (dimensions.get(effective.get('action_space')) != effective.get('action_dim')
                             or effective.get('control_hz') != self.robot_spec.control_hz):

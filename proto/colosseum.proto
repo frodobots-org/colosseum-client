@@ -138,11 +138,15 @@ message Error {
 message LocalModelSpec {
   string url = 1;
   string revision = 2;
-  string runtime_profile = 3;
+  optional string runtime_profile = 3;
   string action_space = 4;
   uint32 action_dim = 5;
   uint32 control_hz = 6;
   uint32 max_horizon = 7;
+  optional string subfolder = 8;
+  // Absent means legacy VLA. For LLM, name is the provider API model name.
+  optional string model_type = 9;
+  optional string name = 10;
 }
 message LocalTaskSpec {
   optional string id = 1;
@@ -155,6 +159,8 @@ message LocalTaskSpec {
   repeated string cameras = 8;
 }
 message LocalControl {
+  // Client -> Policy Server only. Never echo, persist, or send to Router.
+  optional string api_key = 20;
   optional bool test = 19;
   string type = 1;
   uint32 protocol_version = 2;
@@ -162,7 +168,8 @@ message LocalControl {
   string preparation_id = 4;
   LocalModelSpec model = 5;
   LocalTaskSpec task = 6;
-  repeated string runtime_profiles = 7;
+  reserved 7;
+  reserved "runtime_profiles";
   optional bool verification_only = 8;
   optional bool loaded = 9;
   string transport = 10;

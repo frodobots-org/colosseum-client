@@ -27,6 +27,10 @@ def decode_control(raw):
         message = pb.LocalControl.FromString(frame.payload)
         if not message.type or frame.session_id != message.run_id:
             raise ValueError('Invalid control message/session')
-        return MessageToDict(message, preserving_proto_field_name=True)
+        value = MessageToDict(message, preserving_proto_field_name=True)
+        if 'model' in value:
+            value['model'].setdefault('subfolder', '')
+            value['model'].setdefault('runtime_profile', '')
+        return value
     except DecodeError as exc:
         raise ValueError('Malformed Protobuf control frame') from exc

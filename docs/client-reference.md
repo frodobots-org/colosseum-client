@@ -619,6 +619,24 @@ frame = dataset[0]
 Format reference: https://huggingface.co/docs/lerobot/lerobot-dataset-v3
 
 Local evaluations request model assignments directly from Router without querying
-Policy Server capabilities. Router specifies the model URL, revision and runtime
-profile; Client forwards them to Policy Server and waits for preparation progress
+Policy Server capabilities. Router specifies the model URL, revision and optional subfolder; Client forwards them to Policy Server and waits for preparation progress
 and readiness. The verification server still simulates model preparation and inference.
+
+## Cloud LLM keys
+
+Optional `llm_api_keys` maps `openai`, `xai`, and `anthropic` to direct key
+strings or `env:VARIABLE` references. Empty/unset references do not enable a
+provider. Do not configure `llm_access_token`; it is not used.
+
+The Client sends only the configured provider API URLs in `POST /api/eval/next`.
+An updated Router excludes all LLM policies when that list is absent. For a
+selected LLM, only its key is sent to the trusted Policy Server in the direct
+Protobuf preparation. Credentials require a WSS endpoint or loopback WS through
+an SSH tunnel. The Router does not receive or persist provider keys. This flow
+currently requires `policy_server_url` (local inference mode).
+
+Models use `model_type`, `name`, and `url`. VLA URLs identify HF repositories;
+LLM URLs identify API bases and names are exact API model names. Both use the
+existing action contract. Upgrade Client and Policy Server together for the
+additive Protobuf fields. An older Client without LLM capabilities remains
+eligible only for VLA policies.

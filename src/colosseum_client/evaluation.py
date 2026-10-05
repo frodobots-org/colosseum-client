@@ -60,6 +60,8 @@ class EvalAPI:
             headers={'Authorization': f'Bearer {config.token}', 'X-Colosseum-Institution': quote(config.institution.strip(),safe='')}, timeout=30, trust_env=False, verify=ssl.create_default_context())
 
     def request(self, method, path, body=None):
+        if method.upper() == 'POST' and path == '/next' and getattr(self.config, 'llm_api_urls', []):
+            body = {**body, 'llm_api_urls': self.config.llm_api_urls}
         response = self.client.request(method, '/api/eval' + path, json=body,
             timeout=1800 if path.endswith('/dataset/complete') else 30)
         if response.status_code == 409:

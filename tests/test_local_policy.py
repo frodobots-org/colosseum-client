@@ -59,7 +59,7 @@ async def test_simulation_preparation_has_total_deadline_despite_progress():
 async def test_simulation_inference_deadline():
     from colosseum_client.local_protocol import encode_control
     c = client()
-    c.model = {'url':'https://huggingface.co/example/model'}
+    c.model = {'url':'https://huggingface.co/example/model', 'subfolder':'', 'runtime_profile':''}
     c.task = {'instruction':'Close laptop'}
     c.inference_timeout = .01
     class SlowInference:
@@ -76,15 +76,16 @@ async def test_simulation_inference_deadline():
         await c._simulate({'preparation_id':'p'})
 
 
+@pytest.mark.parametrize('subfolder', ['', 'g05-so101'])
 @pytest.mark.parametrize('ping', [(20, 60), (7, 15)])
 @pytest.mark.parametrize('receipt', [False, True])
-async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, ping):
+async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, ping, subfolder):
     from colosseum_client.local_protocol import encode_control, decode_control
     from colosseum_client import local_policy
     c = client()
     c.session_id = ''
     model = dict(url='https://huggingface.co/example/model',revision='a'*40,
-        runtime_profile='test',action_space='joint_position',action_dim=8,control_hz=15,max_horizon=1)
+        subfolder=subfolder,action_space='joint_position',action_dim=8,control_hz=15,max_horizon=1)
     preparation = dict(type='prepare', protocol_version=1, run_id=c.run_id,
         preparation_id='p',model=model,test=False,task={'instruction':'Move cup'})
     ack = asyncio.Event()

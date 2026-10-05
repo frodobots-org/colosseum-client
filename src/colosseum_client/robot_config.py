@@ -13,6 +13,7 @@ class RobotClientConfig:
     url: str
     token: str
     cameras: Mapping[str, str]
+    llm_api_keys: Mapping[str, str] = field(default_factory=dict, repr=False)
     institution: str = ""
     scene: str = ""
     evaluator: str = ""
@@ -40,7 +41,17 @@ class RobotClientConfig:
     image_width: int = 512
     image_height: int = 288
 
+    @property
+    def llm_api_urls(self):
+        from .llm_credentials import API_URLS
+        return [API_URLS[name] for name in self.llm_api_keys]
+
     def __post_init__(self) -> None:
+        from .llm_credentials import resolve_keys, require_secure_policy_url
+        keys = resolve_keys(self.llm_api_keys)
+        if keys:
+            require_secure_policy_url(self.policy_server_url)
+        object.__setattr__(self, 'llm_api_keys', keys)
         for name in ('policy_ping_interval', 'policy_ping_timeout'):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f'{name} must be a positive integer in seconds')
@@ -89,7 +100,7 @@ class RobotClientConfig:
             "institution", "test", "use_local_action_contract", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
             "robot_type", "adapter", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
             "url", "dataset_url", "dataset_token", "dataset_token_file",
-            "token",
+            "token", "llm_api_keys",
             "cameras",
             "instruction",
             "control_hz",
@@ -128,6 +139,7 @@ class RobotClientConfig:
         config = cls(
             url=value["url"],
             token=value["token"],
+            llm_api_keys=value.get("llm_api_keys", {}),
             cameras={name: str(camera_id) for name, camera_id in cameras.items()} or ({'head_image':'dummy'} if value.get('test', False) else {}),
             scene=value.get("scene", ""),
             institution=value.get("institution", ""),

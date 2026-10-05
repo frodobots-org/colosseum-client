@@ -107,3 +107,12 @@ policy_server_url: ws://localhost:8000
 ## Use the local Policy Server's effective action contract for the assigned model.
 ## Requires policy_server_url and a server that reports a compatible effective_model.
 # use_local_action_contract: false
+
+# Optional cloud LLM evaluation (requires an updated Router and Policy Server).
+# Unset/empty keys do not enable that provider; no keys means VLA-only.
+# Key values travel directly to the selected Policy Server, never to Router.
+# policy_server_url must be wss:// or ws:// on localhost / an SSH tunnel.
+# llm_api_keys:
+#   openai: env:OPENAI_API_KEY
+#   xai: env:XAI_API_KEY
+#   anthropic: env:ANTHROPIC_API_KEY
