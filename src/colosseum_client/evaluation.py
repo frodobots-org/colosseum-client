@@ -61,7 +61,8 @@ class EvalAPI:
 
     def request(self, method, path, body=None):
         if method.upper() == 'POST' and path == '/next' and getattr(self.config, 'llm_api_urls', []):
-            body = {**body, 'llm_api_urls': self.config.llm_api_urls}
+            body = {**body, 'llm_api_urls': self.config.llm_api_urls,
+                    'llm_providers': list(self.config.llm_api_keys)}
         response = self.client.request(method, '/api/eval' + path, json=body,
             timeout=1800 if path.endswith('/dataset/complete') else 30)
         if response.status_code == 409:

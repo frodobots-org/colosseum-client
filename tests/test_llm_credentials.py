@@ -57,7 +57,7 @@ def test_router_request_contains_only_capability_urls():
         api.request('POST', '/next', {'inference_mode': 'local'})
     finally:
         api.client.close()
-    assert seen == [{'inference_mode': 'local', 'llm_api_urls': ['https://api.x.ai/v1']}]
+    assert seen == [{'inference_mode': 'local', 'llm_api_urls': ['https://api.x.ai/v1'], 'llm_providers': ['xai']}]
     assert 'secret' not in json.dumps(seen)
 
 
@@ -66,3 +66,13 @@ def test_yaml_loading(tmp_path, monkeypatch):
     path = tmp_path/'robot.yaml'
     path.write_text('url: wss://router.example\ntoken: test\ntest: true\npolicy_server_url: ws://localhost:8000\nllm_api_keys:\n  xai: env:TEST_XAI_KEY\n')
     assert RobotClientConfig.from_yaml(path).llm_api_keys == {'xai': 'secret'}
+
+@pytest.mark.parametrize('name,provider', [('gpt-6-astra','openai'), ('grok-4.7','xai'), ('claude-opus-5-5','anthropic')])
+def test_shared_relay_selects_key_by_model_name(name, provider):
+    keys = {'openai':'gpt-secret', 'xai':'grok-secret', 'anthropic':'claude-secret'}
+    prepare = {'model': {'model_type':'llm', 'name':name, 'url':'https://api.yhlxj.ai/v1'}}
+    actual = local_preparation(prepare, keys, 'ws://localhost:8000')
+    assert actual['api_key'] == keys[provider]
+    assert 'api_key' not in prepare
+    with pytest.raises(ValueError, match='no matching'):
+        local_preparation(prepare, {k:v for k,v in keys.items() if k != provider}, 'ws://localhost:8000')

@@ -50,3 +50,24 @@ and submit the evaluation. Recordings are saved under `eval_runs/` by default.
 ## Reference
 
 [Evaluation flow & API reference](docs/client-reference.md)
+
+### LLM relay credentials
+
+The Router supplies each LLM's API URL; no Client base-URL setting is needed.
+`llm_api_keys.openai`, `.xai`, and `.anthropic` select credentials by the assigned
+model name (`gpt-*`, `grok-*`, `claude-*`), including when all three use one relay
+host. Use that relay's respective keys, not unrelated official-provider keys.
+For example:
+
+```yaml
+llm_api_keys:
+  openai: env:YHLXJ_OPENAI_KEY
+  xai: env:YHLXJ_XAI_KEY
+  anthropic: env:YHLXJ_ANTHROPIC_KEY
+deadline_ms: 120000
+```
+
+`env:` resolves process environment variables; it does not load `.env` by
+itself. Literal key values in a private YAML config are also supported.
+The Client sends only capability names/legacy URLs to Router, never keys.
+Upgrade Router before this Client: `/next` now includes `llm_providers`.

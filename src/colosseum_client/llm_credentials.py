@@ -41,7 +41,9 @@ def local_preparation(preparation, keys, policy_url):
     if model.get('model_type', 'vla') != 'llm':
         return preparation
     require_secure_policy_url(policy_url)
-    provider = next((name for name, url in API_URLS.items() if url == model['url']), None)
+    provider = next((provider for prefix, provider in
+                     [('gpt-', 'openai'), ('grok-', 'xai'), ('claude-', 'anthropic')]
+                     if model.get('name', '').startswith(prefix)), None)
     key = keys.get(provider)
     if not key:
         raise ValueError('Assigned LLM has no matching Client API key')
