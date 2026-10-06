@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from .adapters import make_robot
-from .diagnostics import read_observation, execute_robot_action, close_resources
+from .diagnostics import read_observation, execute_robot_action_async, close_resources
 from .client import ColosseumClient, ProtocolError
 from .recording import TrialRecorder
 from .http_diagnostics import log_http_error
@@ -226,7 +226,10 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 save(path / 'recording-context.json', {
                     'robot_type': config.robot_type, 'fps': config.control_hz,
                     'action_space': robot.action_space_name,
-                    'execution_enabled': execute_action, 'test': config.test})
+                    'execution_enabled': execute_action, 'test': config.test,
+                    'joint_step_mode': getattr(robot, 'joint_step_mode', None),
+                    'action_recording': 'policy_targets',
+                    'joint_max_step': config.adapter_config.get('joint_max_step')})
                 record_cameras = trial_cameras(config, task)
                 print(f"Recording cameras: {record_cameras} (Router task cameras: {task['cameras']})", flush=True)
                 recorder = TrialRecorder(path, record_cameras)
@@ -255,7 +258,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     recorder.add(current, action, captured_at=captured_at)
                 if local_mode:
                     await client.before_action(step)
-                await robot_call(execute_robot_action, robot, action, step, execute_action)
+                await execute_robot_action_async(robot, action, step, robot_call, execute_action)
                 chunk_index += 1
                 step += 1
                 # Include observation, inference and execution in the control period.

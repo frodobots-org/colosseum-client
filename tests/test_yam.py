@@ -150,6 +150,142 @@ def test_invalid_settings_open_nothing(hardware):
     assert hardware == []
 
 
+def test_clip_uses_fresh_feedback_preserves_grippers_and_policy_action(hardware, caplog):
+    cfg = config()
+    cfg = replace(cfg, adapter_config={**cfg.adapter_config,
+        'joint_step_mode': 'clip', 'joint_max_step': [.01]*12})
+    robot = make_robot(cfg)
+    for arm in robot.arms:
+        arm.position[:6] = 0
+    action = np.array([.16, -.16, .005, 0, 0, 0, .3,
+                       -.16, .16, -.005, 0, 0, 0, .7])
+    original = action.copy()
+    robot.execute(action)
+    np.testing.assert_allclose(robot.arms[0].commands[-1], [.01, -.01, .005, 0, 0, 0, .3])
+    np.testing.assert_allclose(robot.arms[1].commands[-1], [-.01, .01, -.005, 0, 0, 0, .7])
+    # A stalled arm must not accumulate larger targets on successive calls.
+    robot.execute(action)
+    for arm in robot.arms:
+        np.testing.assert_array_equal(arm.commands[-1], arm.commands[-2])
+    robot.arms[0].position[0] = .008
+    robot.execute(action)
+    assert robot.arms[0].commands[-1][0] == pytest.approx(.018)
+    np.testing.assert_array_equal(action, original)
+    assert 'left_joint1: measured=0.000000, target=0.160000' in caplog.text
+    assert 'right_joint1' in caplog.text
+    robot.close()
+
+
+@pytest.mark.parametrize('index,value', [(0, 4), (7, -4), (6, 1.1), (13, -.1), (1, float('nan'))])
+def test_clip_keeps_invalid_actions_from_moving_either_arm(hardware, index, value):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'joint_step_mode': 'clip'}))
+    action = np.r_[robot.arms[0].position, robot.arms[1].position]
+    action[index] = value
+    with pytest.raises(ValueError):
+        robot.execute(action)
+    assert all(not arm.commands for arm in robot.arms)
+    robot.close()
+
+
+def test_clip_rejects_measured_position_outside_absolute_limits(hardware):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'joint_step_mode': 'clip'}))
+    action = np.r_[robot.arms[0].position, robot.arms[1].position]
+    robot.arms[1].position[0] = 3.01
+    action[7] = 3.
+    with pytest.raises(ValueError, match='measured position exceeds joint limits'):
+        robot.execute(action)
+    assert all(not arm.commands for arm in robot.arms)
+    robot.close()
+
+
+def test_invalid_step_mode_opens_no_hardware(hardware):
+    cfg = config()
+    with pytest.raises(ValueError, match='joint_step_mode'):
+        make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'joint_step_mode': 'ignore'}))
+    assert hardware == []
+
+
+@pytest.mark.asyncio
+async def test_interpolation_bounds_commands_and_reaches_original_target(hardware, monkeypatch):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+        'joint_step_mode': 'interpolate', 'joint_max_step': [.01]*12}))
+    starts = np.r_[robot.arms[0].position, robot.arms[1].position]
+    target = starts.copy()
+    target[0] += .1599
+    target[7] -= .1221
+    target[6] += .05
+    original = target.copy()
+    waits = []
+    async def call(fn, *args): return fn(*args)
+    async def sleep(delay): waits.append(delay)
+    monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
+    await robot.execute_async(target, call)
+    commands = np.c_[robot.arms[0].commands, robot.arms[1].commands]
+    assert commands.shape == (16, 14)
+    differences = np.abs(np.diff(np.vstack([starts, commands]), axis=0))
+    assert np.max(differences) <= .01 + 1e-12
+    np.testing.assert_allclose(commands[-1], original)
+    np.testing.assert_array_equal(target, original)
+    assert len(waits) == 16 and all(0 <= d <= 1/30 for d in waits)
+    # Planning a later action must start from SDK feedback, not prior targets.
+    robot.arms[0].position[0] = -.1
+    points = robot._interpolation(target)
+    assert points[0, 0] < -.09 + 1e-12
+    robot.close()
+
+
+@pytest.mark.asyncio
+async def test_interpolation_cancellation_stops_subsequent_commands(hardware, monkeypatch):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+        'joint_step_mode': 'interpolate', 'joint_max_step': [.01]*12}))
+    target = np.r_[robot.arms[0].position, robot.arms[1].position]
+    target[0] += .16
+    async def call(fn, *args): return fn(*args)
+    async def cancel(_): raise yam.asyncio.CancelledError
+    monkeypatch.setattr(yam.asyncio, 'sleep', cancel)
+    with pytest.raises(yam.asyncio.CancelledError):
+        await robot.execute_async(target, call)
+    assert all(len(arm.commands) == 1 for arm in robot.arms)
+    robot.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('index,value', [(0, 4), (7, -4), (6, 1.1), (1, float('nan')), (0, 1.5)])
+async def test_interpolation_rejects_invalid_or_excessive_plan_before_moving(hardware, index, value):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+        'joint_step_mode': 'interpolate', 'joint_max_step': [.01]*12}))
+    target = np.r_[robot.arms[0].position, robot.arms[1].position]
+    target[index] = value
+    async def call(fn, *args): return fn(*args)
+    with pytest.raises(ValueError):
+        await robot.execute_async(target, call)
+    assert all(not arm.commands for arm in robot.arms)
+    robot.close()
+
+
+@pytest.mark.asyncio
+async def test_async_execution_dispatch_and_disabled_mode(hardware, monkeypatch):
+    from colosseum_client.diagnostics import execute_robot_action_async
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+        'joint_step_mode': 'interpolate', 'joint_max_step': [.01]*12}))
+    action = np.r_[robot.arms[0].position, robot.arms[1].position]
+    action[0] += .16
+    async def call(fn, *args): return fn(*args)
+    async def sleep(_): pass
+    monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
+    await execute_robot_action_async(robot, action, 0, call, False)
+    assert all(not arm.commands for arm in robot.arms)
+    await execute_robot_action_async(robot, action, 0, call, True)
+    assert all(len(arm.commands) == 16 for arm in robot.arms)
+    robot.close()
+
+
 def test_second_arm_failure_closes_first_arm_and_cameras(hardware, monkeypatch):
     factory = yam._open_arm
     def fail(channel, limits):

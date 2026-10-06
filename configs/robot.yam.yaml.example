@@ -25,6 +25,11 @@ adapter_config:
   joint_high: null
   # Maximum target distance from measured position for each joint, per execute().
   joint_max_step: null
+  # reject (default): reject target-minus-measured changes above joint_max_step.
+  # interpolate: send linear intermediate targets at 30 Hz until the policy
+  # target is sent; joint_max_step bounds command increments in this mode.
+  # clip: truncate a target to measured +/- joint_max_step and continue.
+  joint_step_mode: reject
   camera_timeout_ms: 1000
 recording: true
 skip_upload: false

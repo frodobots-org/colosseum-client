@@ -52,9 +52,46 @@ calibrated gripper `[closed, open]` raw motor positions. Fill the three
 12-element arrays `joint_low`, `joint_high`, and `joint_max_step` from your
 rig's validated operating range. Placeholder nulls deliberately fail before
 opening hardware. Both arms' proposed commands are checked before either is
-sent; out-of-range values are rejected, not silently clipped or interpolated.
+sent; out-of-range values are rejected by default.
 `joint_max_step` bounds target-minus-measured position, not a hardware velocity
 or torque limit. CAN writes are sequential, not atomic.
+
+To truncate excessive joint target changes instead of ending the trial, set
+`adapter_config.joint_step_mode: clip` (default: `reject`). Each command uses
+fresh measured joint positions and clips its targets to measured position plus
+or minus `joint_max_step`. For example, measured 0, target 0.16 and limit 0.01
+sends 0.01 radians. It does not wait for that target before consuming the next
+policy action. Absolute `joint_low`/`joint_high`, finite values and gripper
+ranges remain strict; measured joints outside the absolute limits cannot be
+used for clipping. Gripper targets are unchanged. Clipping logs the affected
+joints, measured positions, requested targets, deltas and limits in radians.
+This changes policy execution and does not guarantee velocity, acceleration,
+collision avoidance or arrival at the original target. Trial recordings retain
+the original policy actions, not the clipped commands; use the clipping logs
+and measured observations when interpreting these recordings.
+
+For MolmoAct2-style smoothing, set `adapter_config.joint_step_mode: interpolate`.
+Each policy target is expanded into linear intermediate commands at 30 Hz,
+starting from fresh SDK feedback. All intermediate commands are sent before
+consuming the next policy action; this does not wait for confirmed arrival.
+Here `joint_max_step` bounds adjacent **commanded targets**, replacing the
+target-minus-measured rejection. Grippers interpolate with a 0.01 normalized
+command step bound. Unlike upstream's floor-based point count, the number of
+intervals is rounded up to respect every configured joint step. More than 100
+intervals rejects the target before sending any command rather than increasing
+the step size. Absolute joint limits, finite values and gripper ranges remain
+strict. The normal-finish zero ramp retains its existing feedback checks.
+
+This follows the upstream `examples/yam/launch_yaml_eval_molmoact.py`
+`dynamic_smoothing` approach, not its exact timing or cached-state behavior.
+Interpolation limits command spacing, not measured tracking error, physical
+speed or acceleration. Async evaluation can be cancelled between SDK calls;
+a blocked native SDK call still cannot be cancelled. Each original action is
+still one policy/recording step, so interpolation increases wall-clock duration
+and reduces effective policy frame rate. Intermediate ticks do not capture
+cameras. `recording-context.json` identifies the mode, step limits and recorded
+action semantics (`policy_targets`); original capture timestamps are retained.
+The exported dataset actions are policy targets, not intermediate commands.
 
 Bring up the CAN interfaces using the I2RT instructions for your hardware.
 The adapter does not change CAN configuration or disable motor watchdogs.

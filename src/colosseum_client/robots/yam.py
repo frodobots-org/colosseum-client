@@ -111,12 +111,15 @@ class YAMRobot(Robot):
         settings = dict(config.adapter_config)
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
-                   'joint_max_step', 'camera_timeout_ms'}
+                   'joint_max_step', 'joint_step_mode', 'camera_timeout_ms'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
         self.low = _vector(settings.get('joint_low'), 12, 'joint_low')
         self.high = _vector(settings.get('joint_high'), 12, 'joint_high')
         self.max_step = _vector(settings.get('joint_max_step'), 12, 'joint_max_step')
+        self.joint_step_mode = settings.get('joint_step_mode', 'reject')
+        if self.joint_step_mode not in ('reject', 'clip', 'interpolate'):
+            raise ValueError('joint_step_mode must be reject, clip or interpolate')
         if np.any(self.low >= self.high) or np.any(self.max_step <= 0):
             raise ValueError('YAM requires joint_low < joint_high and positive joint_max_step')
         if np.any(self.low > 0) or np.any(self.high < 0):
@@ -165,16 +168,78 @@ class YAMRobot(Robot):
                                 np.array([left[6], right[6]], dtype=np.float32),
                                 np.empty(0, dtype=np.float32))  # FK is unavailable, not zero.
 
-    def execute(self, action):
+    def _validated_action(self, action):
         value = _vector(action, 14, 'YAM action')
         joints = np.r_[value[:6], value[7:13]]
         if np.any(joints < self.low) or np.any(joints > self.high):
             raise ValueError('YAM action exceeds joint limits')
         if np.any(value[[6, 13]] < 0) or np.any(value[[6, 13]] > 1):
             raise ValueError('YAM grippers must be in [0, 1] (0 closed, 1 open)')
+        return value
+
+    def _interpolation(self, action):
+        """MolmoAct-style linear targets, with a strict command spacing bound.
+
+        Read actual feedback once at the start, then interpolate commands. This
+        bounds command increments, not tracking error or physical joint speed.
+        """
+        target = self._validated_action(action)
         left, right = self._read_positions()
-        if np.any(np.abs(joints - np.r_[left[:6], right[:6]]) > self.max_step):
-            raise ValueError('YAM action exceeds joint_max_step from measured position')
+        start = self._validated_action(np.r_[left, right])
+        limits = np.r_[self.max_step[:6], .01, self.max_step[6:], .01]
+        intervals = max(1, int(np.ceil(np.max(np.abs(target - start) / limits))))
+        if intervals > 100:
+            raise ValueError(f'YAM interpolation requires {intervals} intervals (maximum 100); '
+                             'check starting pose and target')
+        # ceil + intervals+1 avoids upstream floor/linspace endpoint overshoot.
+        return np.linspace(start, target, intervals + 1)[1:]
+
+    def execute(self, action):
+        if self.joint_step_mode != 'interpolate':
+            return self._execute_single(action)
+        for target in self._interpolation(action):
+            started = time.monotonic()
+            self._send_action(target)
+            time.sleep(max(0, 1 / 30 - (time.monotonic() - started)))
+
+    async def execute_async(self, action, robot_call):
+        """Keep each SDK call on its owning thread; allow cancellation per tick."""
+        if self.joint_step_mode != 'interpolate':
+            return await robot_call(self._execute_single, action)
+        targets = await robot_call(self._interpolation, action)
+        for target in targets:
+            started = time.monotonic()
+            await robot_call(self._send_action, target)
+            await asyncio.sleep(max(0, 1 / 30 - (time.monotonic() - started)))
+
+    def _execute_single(self, action):
+        value = self._validated_action(action)
+        joints = np.r_[value[:6], value[7:13]]
+        left, right = self._read_positions()
+        measured = np.r_[left[:6], right[:6]]
+        if self.joint_step_mode == 'clip' and (np.any(measured < self.low) or np.any(measured > self.high)):
+            raise ValueError('YAM measured position exceeds joint limits; cannot clip action')
+        delta = joints - measured
+        exceeded = np.flatnonzero(np.abs(delta) > self.max_step)
+        if exceeded.size:
+            details = '; '.join(
+                f'{"left" if i < 6 else "right"}_joint{i % 6 + 1}: '
+                f'measured={measured[i]:.6f}, target={joints[i]:.6f}, '
+                f'delta={delta[i]:.6f}, limit={self.max_step[i]:.6f}'
+                for i in exceeded)
+            if self.joint_step_mode != 'clip':
+                raise ValueError('YAM action exceeds joint_max_step from measured position: ' + details)
+            # Bound each target against fresh feedback, never the previous command.
+            # Keep absolute limits strict; do not attempt recovery from outside them.
+            limited = measured + np.clip(delta, -self.max_step, self.max_step)
+            value[:6], value[7:13] = limited[:6], limited[6:]
+            log.warning('YAM joint targets clipped (radians): %s', details)
+        self._send_action(value)
+
+    def _send_action(self, action):
+        if self.closed:
+            raise RuntimeError('YAM is closed')
+        value = self._validated_action(action)
         try:
             # Both commands validated before either arm moves. CAN writes are sequential.
             self.arms[0].command_joint_pos(value[:7].copy())
@@ -204,7 +269,7 @@ class YAMRobot(Robot):
         while time.monotonic() < deadline:
             target = target - np.clip(target, -increment, increment)
             action = np.r_[target[:6], grippers[:1], target[6:], grippers[1:]]
-            await robot_call(self.execute, action)
+            await robot_call(self._execute_single, action)
             await asyncio.sleep(1 / 30)
             left, right = await robot_call(self._read_positions)
             measured = np.r_[left[:6], right[:6]]
