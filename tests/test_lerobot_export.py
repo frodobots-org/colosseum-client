@@ -49,6 +49,7 @@ def test_v3_preserves_frame_action_alignment_and_real_capture_times(tmp_path):
         assert int(stream["nb_frames"]) == 3
         assert (stream["height"], stream["width"]) == (26, 32)
     assert len((tmp_path / "frames.jsonl").read_text().splitlines()) == 4
+    assert not list(tmp_path.glob('*/*.png'))
     assert export(tmp_path) == output
     with pytest.raises(ValueError, match="differs"):
         export(tmp_path, institution="changed")
@@ -64,11 +65,35 @@ def test_export_failure_is_atomic_and_retryable(tmp_path, monkeypatch):
         export(tmp_path)
     assert not (tmp_path / "lerobot").exists()
     assert not list(tmp_path.glob(".lerobot-*"))
+    assert len(list(tmp_path.glob('*/*.png'))) == 8
     monkeypatch.setattr(subprocess, "run", original)
     output = export(tmp_path)
     (output / "meta/stats.json").write_text("{}")
     with pytest.raises(ValueError, match="modified"):
         export(tmp_path)
+
+
+def test_cleanup_retry_uses_committed_export_and_preserves_other_files(tmp_path, monkeypatch):
+    from pathlib import Path
+    record(tmp_path)
+    unrelated = tmp_path / 'head_image' / 'notes.png'
+    unrelated.write_bytes(b'not a recording frame')
+    original = Path.unlink
+    def fail_one(path, *args, **kwargs):
+        if path.name == '000001.png':
+            raise PermissionError('cleanup interrupted')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', fail_one)
+    with pytest.raises(PermissionError, match='cleanup interrupted'):
+        export(tmp_path)
+    assert (tmp_path / 'lerobot/meta/colosseum.json').is_file()
+    assert not (tmp_path / 'head_image/000000.png').exists()
+    monkeypatch.setattr(Path, 'unlink', original)
+    def no_encode(*args, **kwargs):
+        pytest.fail('A complete export must not need source images or re-encoding')
+    monkeypatch.setattr(subprocess, 'run', no_encode)
+    export(tmp_path)
+    assert list(tmp_path.glob('*/*.png')) == [unrelated]
 
 
 def test_legacy_recording_does_not_invent_gripper_state(tmp_path):

@@ -28,13 +28,21 @@ def _stats(values):
             "count": [len(values)]}
 
 
+def _clear_source_images(path, cameras, rows):
+    """Only remove this recording's frames, after the export is committed."""
+    for camera in cameras:
+        for row in rows:
+            (path / camera / f"{row['frame']:06d}.png").unlink(missing_ok=True)
+
+
 def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
                  task: str, metadata: dict) -> Path:
     """Write atomically; retries reuse only a matching, complete export.
 
     Dataset timestamps index control steps at nominal FPS. The original irregular
     capture clock is preserved separately, without resampling observations/actions.
-    The final observation with no action is retained in the source recording only.
+    Source PNGs are removed after export, without waiting for upload. The final
+    observation with no action retains only its numeric source record.
     """
     path = Path(path)
     if fps <= 0 or not cameras or len(set(cameras)) != len(cameras):
@@ -97,6 +105,7 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
         for relative, digest in marker["files"].items():
             if hashlib.sha256((destination / relative).read_bytes()).hexdigest() != digest:
                 raise ValueError("Existing LeRobot export is incomplete or modified")
+        _clear_source_images(path, cameras, all_rows)
         return destination
     staging = Path(tempfile.mkdtemp(prefix=".lerobot-", dir=path))
     try:
@@ -215,4 +224,5 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+    _clear_source_images(path, cameras, all_rows)
     return destination

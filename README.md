@@ -35,6 +35,10 @@ uv run --extra <robot_type> colosseum-robot configs/robot.yaml
 
 Follow the prompts to enter an instruction or select a task, start the trial,
 and submit the evaluation. Recordings are saved under `eval_runs/` by default.
+After a successful LeRobot export, the trial's source PNGs are deleted, even
+when upload is skipped. Videos, Parquet, metadata and `frames.jsonl` remain for
+upload retries. Failed exports retain PNGs. The final observation without an
+action retains its numeric record only; its image is not included in the dataset.
 
 ## Supported robots
 
