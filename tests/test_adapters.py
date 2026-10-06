@@ -12,7 +12,7 @@ def config(**kwargs):
     return RobotClientConfig(url='ws://localhost', token='test', cameras={'wrist': 'camera0'}, **kwargs)
 
 
-@pytest.mark.parametrize('name', ['so101', 'g1'])
+@pytest.mark.parametrize('name', ['g1'])
 def test_todo_adapters_fail_explicitly(name):
     with pytest.raises(NotImplementedError, match='hardware control is not implemented'):
         make_robot(config(robot_type=name))
@@ -105,7 +105,7 @@ async def test_legacy_runner_does_not_fall_back_to_droid(settings):
         await run_robot(config(**settings), 'test')
 
 
-@pytest.mark.parametrize('name', ['so101', 'g1'])
+@pytest.mark.parametrize('name', ['g1'])
 def test_shared_example_selects_todo_robot_without_opening_hardware(tmp_path, name):
     example = Path(__file__).parents[1] / 'configs' / 'robot.yaml.example'
     values = yaml.safe_load(example.read_text())

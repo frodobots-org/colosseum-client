@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 franka = ["droid"]
+# LeRobot supplies the Feetech bus, calibration and camera drivers; it requires Python 3.12+.
+so101 = ["lerobot[feetech,intelrealsense]>=0.6,<0.7; python_version >= '3.12'"]
 yam = ["pyrealsense2>=2.55,<3"]  # Install the pinned I2RT SDK separately; see docs/yam.md.
 modelscope = ["modelscope-hub>=0.4.5,<0.5"]
 huggingface = ["huggingface-hub>=1.0,<2"]

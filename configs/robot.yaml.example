@@ -10,7 +10,8 @@ token: clt_replace_with_token_from_admin
 institution: replace_with_institution_from_admin
 
 ## Robot implementation: franka | so101 | yam | g1.
-## SO101, YAM and G1 drivers are currently TODOs.
+## For so101 and yam, start from configs/robot.so101.yaml.example or robot.yam.yaml.example.
+## The G1 driver is currently a TODO.
 robot_type: franka
 
 ## Map camera roles to your physical camera IDs. Replace the placeholders.

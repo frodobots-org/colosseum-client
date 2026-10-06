@@ -25,7 +25,7 @@ policy on the Router.
 | `src/colosseum_client/robot_interface.py` | Shared `RobotObservation` and `Robot` contract |
 | `src/colosseum_client/adapters.py` | Select a built-in or external adapter |
 | `src/colosseum_client/robots/franka.py` | Existing Franka driver (`DroidRobot`, using DROID/R2D2) |
-| `src/colosseum_client/robots/so101.py` | SO101 hardware integration TODOs |
+| `src/colosseum_client/robots/so101.py` | SO101 LeRobot driver (see [SO101 setup](so101.md)) |
 | `src/colosseum_client/robots/yam.py` | Bimanual YAM I2RT driver (see [YAM setup](yam.md)) |
 | `src/colosseum_client/robots/g1.py` | G1 hardware integration TODOs |
 | `src/colosseum_client/evaluation.py` | Shared trial, observation and action loop |
@@ -68,7 +68,7 @@ real inference validation as separate milestones.
 | `robot_type` | Status |
 | --- | --- |
 | `franka` | Existing DROID/R2D2 hardware driver |
-| `so101` | TODO template; no hardware driver |
+| `so101` | LeRobot Feetech driver + LeRobot cameras; [setup and behavior](so101.md) |
 | `yam` | Bimanual I2RT + three RealSense cameras; [setup and validation limits](yam.md) |
 | `g1` | TODO template; no hardware driver |
 
@@ -78,6 +78,7 @@ Templates are in `src/colosseum_client/robots/`. They raise `NotImplementedError
 at construction, before opening hardware. Their joint/action dimensions are
 deliberately unspecified: choose the actual controlled joints and policy contract.
 For YAM use `configs/robot.yam.yaml.example` and [the YAM guide](yam.md).
+For SO101 use `configs/robot.so101.yaml.example` and [the SO101 guide](so101.md).
 Other robots share `configs/robot.yaml.example`. Copy it to `configs/robot.yaml`
 and change `robot_type` to `franka`, `so101`, `yam`, `g1`, or an installed external
 robot type. Set the camera IDs and hardware settings for the selected robot.
@@ -137,8 +138,8 @@ but require a corresponding Router API change before evaluation can use them.
 `execute` and `close`; Python rejects instantiation if any abstract method is
 missing. Constructors remain driver-specific. Hardware metadata fields must also
 be supplied by the driver; ABC does not validate their values or action semantics.
-The SO101/G1 skeletons override these methods with `NotImplementedError` and
-still fail explicitly in their constructors until hardware support is implemented.
+The G1 skeleton overrides these methods with `NotImplementedError` and
+still fails explicitly in its constructor until hardware support is implemented.
 
 ```python
 from colosseum_client import Robot, RobotClientConfig, RobotObservation

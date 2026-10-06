@@ -73,6 +73,10 @@ class TestRobot(Robot):
                 raise ValueError('Synthetic YAM requires 14-D joint_position')
             self.joint_count = 12
             self.gripper = np.zeros(2, dtype=np.float32)
+        if self.robot_type == 'so101' and self.action_space_name == 'joint_position':
+            if self.action_dim != 6:
+                raise ValueError('Synthetic SO101 requires 6-D joint_position')
+            self.joint_count = 5
         self.joints = np.zeros(self.joint_count, dtype=np.float32)
 
     def get_observation(self):
