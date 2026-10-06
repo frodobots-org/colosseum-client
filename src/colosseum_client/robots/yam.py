@@ -261,13 +261,20 @@ class YAMRobot(Robot):
         print('YAM normal finish: moving arm joints to zero; grippers unchanged.', flush=True)
         left, right = await robot_call(self._read_positions)
         target = np.r_[left[:6], right[:6]]
+        measured = target.copy()
         grippers = np.array([left[6], right[6]])
         # At most 0.15 rad/s in commanded targets, and below the action delta guard.
         increment = np.minimum(self.max_step * .5, .15 / 30)
         deadline = time.monotonic() + 60
         settled = 0
         while time.monotonic() < deadline:
-            target = target - np.clip(target, -increment, increment)
+            proposed = target - np.clip(target, -increment, increment)
+            # Allow only progress toward zero within half the feedback guard.
+            # A lagging joint holds/slows its target rather than accumulating
+            # tracking error. Never jump backward or exceed the ramp increment.
+            limited = np.clip(proposed, measured - self.max_step * .5,
+                              measured + self.max_step * .5)
+            target = np.clip(limited, np.minimum(target, proposed), np.maximum(target, proposed))
             action = np.r_[target[:6], grippers[:1], target[6:], grippers[1:]]
             await robot_call(self._execute_single, action)
             await asyncio.sleep(1 / 30)

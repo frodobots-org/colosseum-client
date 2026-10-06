@@ -124,6 +124,10 @@ After Enter/max steps, the Client closes the trial recording, ramps both arms
 at at most 0.15 rad/s in commanded targets, preserves measured gripper positions,
 and requires three readings within 0.02 rad before reporting the run finished.
 Parking is outside the scored recording. The operation times out after 60 seconds.
+The ramp slows or holds each joint's target when measured feedback lags, keeping
+new progress within half of `joint_max_step` from the latest feedback. The full
+feedback guard still checks each command; a stalled arm times out instead of
+continually advancing its target. This applies in all action step modes.
 Model type does not affect this behavior: both LLM and VLA use the robot lifecycle.
 
 Inference failures, Ctrl-C/cancellation, test mode and `--no-execute-action` do
