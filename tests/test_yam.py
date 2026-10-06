@@ -1,10 +1,80 @@
 from dataclasses import replace
+import threading
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from colosseum_client import RobotClientConfig, make_robot
 from colosseum_client.robots import yam
+
+
+def test_close_waits_for_inflight_can_exchange():
+    entered, stop_requested, exited = (threading.Event() for _ in range(3))
+    events = []
+
+    class Chain:
+        running = True
+
+        def exchange(self):
+            entered.set()
+            assert stop_requested.wait(2)
+            # A final exchange may still be in flight when running becomes false.
+            events.append('last_can_send')
+            exited.set()
+
+    chain = Chain()
+    def socket_close():
+        assert exited.is_set()
+        events.append('socket_close')
+    chain.motor_interface = SimpleNamespace(close=socket_close)
+    def sdk_close():
+        events.append('robot_loop_stopped')
+        chain.running = False
+        stop_requested.set()
+        chain.motor_interface.close()
+    arm = SimpleNamespace(motor_chain=chain, close=sdk_close)
+    worker = threading.Thread(target=chain.exchange)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        yam._close_arm(arm)
+        assert not worker.is_alive()
+        assert events == ['robot_loop_stopped', 'last_can_send', 'socket_close']
+        assert chain.motor_interface.close is socket_close
+    finally:
+        stop_requested.set()
+        worker.join(2)
+
+
+def test_close_timeout_is_reported_and_socket_shutdown_attempted(monkeypatch):
+    events = []
+    chain = SimpleNamespace(running=True)
+    def socket_close():
+        events.append('socket_close')
+    chain.motor_interface = SimpleNamespace(close=socket_close)
+    worker = SimpleNamespace(name='stuck', _target=SimpleNamespace(__self__=chain),
+        join=lambda **kwargs: events.append('join'), is_alive=lambda: True)
+    monkeypatch.setattr(threading, 'enumerate', lambda: [worker])
+    arm = SimpleNamespace(motor_chain=chain, close=lambda: chain.motor_interface.close())
+    with pytest.raises(RuntimeError, match='did not stop'):
+        yam._close_arm(arm)
+    assert events == ['join', 'socket_close']
+    assert chain.motor_interface.close is socket_close
+
+
+def test_shutdown_failure_still_closes_other_arm_and_cameras(hardware, monkeypatch):
+    robot = make_robot(config())
+    original = yam._close_arm
+    def fail_left(arm):
+        if arm is robot.arms[0]:
+            raise RuntimeError('shutdown failed')
+        original(arm)
+    monkeypatch.setattr(yam, '_close_arm', fail_left)
+    with pytest.raises(RuntimeError, match='YAM resource shutdown failed'):
+        robot.close()
+    assert robot.arms[1].closed == 1
+    assert all(camera.closed == 1 for camera in robot.cameras.values())
 
 
 def config():

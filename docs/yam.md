@@ -67,7 +67,12 @@ additional application watchdog in this adapter, and a blocked native SDK call
 cannot be cancelled by Python. SDK initialization/close can block. Validate
 motor watchdog and emergency-stop behavior on the rig before unattended use.
 On normal exit or command failure, the adapter calls SDK `close()` for both
-arms and stops cameras. **I2RT close releases motor torque; it does not hold
+arms and stops cameras. For the pinned I2RT version, the adapter waits for each
+arm's CAN control workers before the SDK closes its motor interface, avoiding
+sends against a closed socket. A worker that does not stop within five seconds
+is reported as a shutdown failure; SDK shutdown is still attempted and the
+other arm and cameras are still closed. This does not make blocked native SDK
+calls cancellable. **I2RT close releases motor torque; it does not hold
 against gravity. Support/park the arms appropriately before shutdown.**
 
 ## Connect the Policy Server

@@ -5,6 +5,7 @@ normalized gripper. Observations keep twelve joints and two grippers separate.
 SDK close releases motor torque; it is not a powered position hold.
 """
 import logging
+import threading
 
 import numpy as np
 
@@ -12,6 +13,43 @@ from ..robot_interface import Robot, RobotObservation
 
 log = logging.getLogger(__name__)
 CAMERAS = ('head_image', 'left_image', 'right_image')
+_CONTROL_JOIN_TIMEOUT = 5.0
+
+
+def _close_arm(arm):
+    """Let I2RT stop its robot loop, then join CAN workers before socket close.
+
+    The pinned I2RT DMChain discards its worker handle. Discover only workers
+    bound to this chain; do not change the SDK globally or other arms' threads.
+    """
+    chain = getattr(arm, 'motor_chain', None)
+    interface = getattr(chain, 'motor_interface', None)
+    if interface is None:
+        arm.close()
+        return
+    workers = [t for t in threading.enumerate()
+               if getattr(getattr(t, '_target', None), '__self__', None) is chain]
+    original_close = interface.close
+
+    def close_after_workers():
+        chain.running = False
+        pending = []
+        for worker in workers:
+            if worker is not threading.current_thread():
+                worker.join(timeout=_CONTROL_JOIN_TIMEOUT)
+            if worker.is_alive():
+                pending.append(worker.name)
+        # Always attempt SDK motor/socket shutdown, even after a join timeout.
+        # A timeout remains a reported failure, never a successful teardown.
+        original_close()
+        if pending:
+            raise RuntimeError(f'I2RT CAN workers did not stop before shutdown: {pending}')
+
+    interface.close = close_after_workers
+    try:
+        arm.close()
+    finally:
+        interface.close = original_close
 
 
 def _vector(value, size, name):
@@ -151,7 +189,10 @@ class YAMRobot(Robot):
         errors = []
         for resource in [*self.arms, *self.cameras.values()]:
             try:
-                resource.close()
+                if any(resource is arm for arm in self.arms):
+                    _close_arm(resource)
+                else:
+                    resource.close()
             except Exception as exc:
                 errors.append(exc)
         if errors:
