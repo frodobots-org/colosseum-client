@@ -19,6 +19,7 @@ MOTORS = (*JOINTS, 'gripper')
 GRIPPER_RANGE = (0.0, 100.0)
 _CAMERA_TYPES = ('realsense', 'opencv')
 _RETURN_HZ = 30
+_CONNECT_ATTEMPTS = 3
 
 
 def _vector(value, size, name):
@@ -54,22 +55,39 @@ def _open_follower(port, robot_id, calibration_dir, cameras, max_relative_target
             camera_configs[role] = OpenCVCameraConfig(
                 index_or_path=int(camera_id) if camera_id.isdecimal() else camera_id,
                 width=width, height=height, fps=fps)
-    follower = SO101Follower(SO101FollowerConfig(
-        port=port, id=robot_id, calibration_dir=calibration_dir, cameras=camera_configs,
-        use_degrees=True, max_relative_target=max_relative_target))
-    try:
-        # Never start LeRobot's interactive calibration from an evaluation.
-        follower.connect(calibrate=False)
-        if not follower.is_calibrated:
-            raise RuntimeError(
-                f'SO101 {robot_id!r} is not calibrated; run lerobot-calibrate before evaluating')
-    except BaseException:
+    for attempt in range(1, _CONNECT_ATTEMPTS + 1):
+        follower = SO101Follower(SO101FollowerConfig(
+            port=port, id=robot_id, calibration_dir=calibration_dir, cameras=camera_configs,
+            use_degrees=True, max_relative_target=max_relative_target))
         try:
-            follower.disconnect()
+            # Never start LeRobot's interactive calibration from an evaluation.
+            follower.connect(calibrate=False)
+            if not follower.is_calibrated:
+                raise RuntimeError(
+                    f'SO101 {robot_id!r} is not calibrated; run lerobot-calibrate before evaluating')
+            return follower
+        except BaseException as exc:
+            _release(follower)
+            # Feetech buses occasionally corrupt one status packet ("Incorrect status
+            # packet!"); LeRobot's set-up writes are not retried, so retry the connection.
+            if not isinstance(exc, ConnectionError) or attempt == _CONNECT_ATTEMPTS:
+                raise
+            log.warning('SO101 connection attempt %d/%d failed (%s); retrying', attempt, _CONNECT_ATTEMPTS, exc)
+            time.sleep(0.5)
+
+
+def _release(follower):
+    """Disable torque and free the port and cameras of a partly connected follower."""
+    try:
+        follower.disconnect()
+        return
+    except Exception:
+        log.debug('SO101 cleanup after failed connection', exc_info=True)
+    for resource in (follower.bus, *follower.cameras.values()):
+        try:
+            resource.disconnect()
         except Exception:
-            log.debug('SO101 cleanup after failed connection', exc_info=True)
-        raise
-    return follower
+            log.debug('SO101 partial cleanup failed', exc_info=True)
 
 
 class SO101Robot(Robot):

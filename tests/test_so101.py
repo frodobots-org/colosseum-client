@@ -220,3 +220,48 @@ async def test_local_trial_so101_contract_and_hardware_open_after_confirmation(t
     assert events == ['confirm', 'finish', 'close']
     assert hardware[0].disconnected == 1
     assert len(hardware[0].commands) == int(execute_action)
+
+
+def test_transient_bus_error_during_connection_is_retried_and_released(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+    created = []
+
+    class Follower:
+        def __init__(self, config):
+            self.cameras, self.bus, self.released = {}, SimpleNamespace(disconnect=lambda: None), 0
+            created.append(self)
+        def connect(self, calibrate):
+            assert calibrate is False
+            if len(created) < 3:
+                raise ConnectionError('[TxRxResult] Incorrect status packet!')
+        is_calibrated = True
+        def disconnect(self):
+            self.released += 1
+
+    modules = {name: ModuleType(name) for name in (
+        'lerobot', 'lerobot.cameras', 'lerobot.cameras.opencv', 'lerobot.cameras.opencv.configuration_opencv',
+        'lerobot.cameras.realsense', 'lerobot.cameras.realsense.configuration_realsense',
+        'lerobot.robots', 'lerobot.robots.so_follower')}
+    modules['lerobot.cameras.opencv.configuration_opencv'].OpenCVCameraConfig = lambda **kwargs: kwargs
+    modules['lerobot.cameras.realsense.configuration_realsense'].RealSenseCameraConfig = lambda **kwargs: kwargs
+    modules['lerobot.robots.so_follower'].SO101Follower = Follower
+    modules['lerobot.robots.so_follower'].SO101FollowerConfig = lambda **kwargs: kwargs
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(so101.time, 'sleep', lambda _: None)
+    follower = so101._open_follower('/dev/ttyACM0', 'arm', None, {'head_image': ('opencv', '0', 640, 480, 30)}, None)
+    assert follower is created[2] and [f.released for f in created] == [1, 1, 0]
+
+    created.clear()
+    Follower.connect = lambda self, calibrate: (_ for _ in ()).throw(ConnectionError('bus down'))
+    with pytest.raises(ConnectionError, match='bus down'):
+        so101._open_follower('/dev/ttyACM0', 'arm', None, {}, None)
+    assert len(created) == 3 and all(f.released == 1 for f in created)
+
+    created.clear()
+    Follower.connect = lambda self, calibrate: None
+    Follower.is_calibrated = False
+    with pytest.raises(RuntimeError, match='not calibrated'):
+        so101._open_follower('/dev/ttyACM0', 'arm', None, {}, None)
+    assert len(created) == 1 and created[0].released == 1
