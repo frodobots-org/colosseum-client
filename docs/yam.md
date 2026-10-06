@@ -80,7 +80,7 @@ command step bound. Unlike upstream's floor-based point count, the number of
 intervals is rounded up to respect every configured joint step. More than 100
 intervals rejects the target before sending any command rather than increasing
 the step size. Absolute joint limits, finite values and gripper ranges remain
-strict. The normal-finish zero ramp retains its existing feedback checks.
+strict. The normal-finish zero ramp independently verifies measured arrival.
 
 This follows the upstream `examples/yam/launch_yaml_eval_molmoact.py`
 `dynamic_smoothing` approach, not its exact timing or cached-state behavior.
@@ -124,10 +124,14 @@ After Enter/max steps, the Client closes the trial recording, ramps both arms
 at at most 0.15 rad/s in commanded targets, preserves measured gripper positions,
 and requires three readings within 0.02 rad before reporting the run finished.
 Parking is outside the scored recording. The operation times out after 60 seconds.
-The ramp slows or holds each joint's target when measured feedback lags, keeping
-new progress within half of `joint_max_step` from the latest feedback. The full
-feedback guard still checks each command; a stalled arm times out instead of
-continually advancing its target. This applies in all action step modes.
+The zero ramp sends the full trajectory independently of measured tracking lag,
+with command increments bounded by both `joint_max_step` and 0.15 rad/s at 30 Hz.
+It does not use the target-minus-measured rejection or clipping, in any action
+step mode. Absolute limits and finite values are still validated. After sending
+zero it keeps commanding zero while checking measured arrival; sending the
+target alone is not success. On timeout it reports whether zero was sent plus
+all measured joint positions and final command targets, in radians. A stalled
+arm still fails confirmation. This is not a hardware speed or tracking bound.
 Model type does not affect this behavior: both LLM and VLA use the robot lifecycle.
 
 Inference failures, Ctrl-C/cancellation, test mode and `--no-execute-action` do

@@ -260,23 +260,23 @@ class YAMRobot(Robot):
         """
         print('YAM normal finish: moving arm joints to zero; grippers unchanged.', flush=True)
         left, right = await robot_call(self._read_positions)
+        self._validated_action(np.r_[left, right])
         target = np.r_[left[:6], right[:6]]
         measured = target.copy()
         grippers = np.array([left[6], right[6]])
-        # At most 0.15 rad/s in commanded targets, and below the action delta guard.
-        increment = np.minimum(self.max_step * .5, .15 / 30)
+        # Fixed command ramp, independent of feedback lag (as in interpolation).
+        # This limits commanded motion, not physical velocity or tracking error.
+        increment = np.minimum(self.max_step, .15 / 30)
         deadline = time.monotonic() + 60
         settled = 0
+        zero_sent = False
         while time.monotonic() < deadline:
-            proposed = target - np.clip(target, -increment, increment)
-            # Allow only progress toward zero within half the feedback guard.
-            # A lagging joint holds/slows its target rather than accumulating
-            # tracking error. Never jump backward or exceed the ramp increment.
-            limited = np.clip(proposed, measured - self.max_step * .5,
-                              measured + self.max_step * .5)
-            target = np.clip(limited, np.minimum(target, proposed), np.maximum(target, proposed))
+            target = target - np.clip(target, -increment, increment)
             action = np.r_[target[:6], grippers[:1], target[6:], grippers[1:]]
-            await robot_call(self._execute_single, action)
+            await robot_call(self._send_action, action)
+            if not zero_sent and np.all(target == 0):
+                zero_sent = True
+                print('YAM zero target sent; waiting for measured position confirmation.', flush=True)
             await asyncio.sleep(1 / 30)
             left, right = await robot_call(self._read_positions)
             measured = np.r_[left[:6], right[:6]]
@@ -284,7 +284,12 @@ class YAMRobot(Robot):
             if settled >= 3:
                 print('YAM zero position reached; proceeding to torque shutdown.', flush=True)
                 return
-        raise RuntimeError('YAM move to zero timed out; position was not confirmed')
+        details = '; '.join(
+            f'{"left" if i < 6 else "right"}_joint{i % 6 + 1}: '
+            f'measured={measured[i]:.6f}, target={target[i]:.6f}'
+            for i in range(12))
+        raise RuntimeError('YAM move to zero timed out; position was not confirmed; '
+                           f'zero_target_sent={zero_sent}, tolerance=0.020000 rad; {details}')
 
     def close(self):
         if self.closed:

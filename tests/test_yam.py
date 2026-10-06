@@ -386,8 +386,10 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
 
 
 @pytest.mark.asyncio
-async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypatch):
+@pytest.mark.parametrize('max_step', [.001, .01, .05])
+async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypatch, max_step):
     cfg = config()
+    cfg = replace(cfg, adapter_config={**cfg.adapter_config, 'joint_max_step': [max_step]*12})
     robot = make_robot(cfg)
     starts = [arm.position.copy() for arm in robot.arms]
     for arm in robot.arms:
@@ -402,7 +404,7 @@ async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypa
     await robot.finish_trial(call)
     for arm, start in zip(robot.arms, starts):
         actions = np.vstack([start, *arm.commands])
-        assert np.max(np.abs(np.diff(actions[:, :6], axis=0))) <= .15/30 + 1e-9
+        assert np.max(np.abs(np.diff(actions[:, :6], axis=0))) <= min(max_step, .15/30) + 1e-9
         np.testing.assert_array_equal(actions[:, 6], start[6])
         np.testing.assert_array_equal(arm.position[:6], np.zeros(6))
         assert arm.closed == 0
@@ -411,7 +413,7 @@ async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['reject', 'clip', 'interpolate'])
-async def test_zero_ramp_waits_for_lagging_joints(hardware, monkeypatch, mode):
+async def test_zero_ramp_reaches_zero_despite_feedback_deadband(hardware, monkeypatch, mode):
     cfg = config()
     robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
         'joint_step_mode': mode, 'joint_max_step': [.01]*12}))
@@ -421,10 +423,11 @@ async def test_zero_ramp_waits_for_lagging_joints(hardware, monkeypatch, mode):
         starts.append(arm.position.copy())
         original = arm.command_joint_pos
         def lag(value, arm=arm, original=original):
-            # Reproduce hardware following only part of each requested move.
-            assert np.max(np.abs(value[:6] - arm.position[:6])) <= .005 + 1e-12
+            # A simulated deadband larger than the old half-step guard would
+            # keep that ramp stuck forever, even though larger targets work.
             original(value)
-            arm.position[:6] += .25 * (value[:6] - arm.position[:6])
+            error = value[:6] - arm.position[:6]
+            arm.position[:6] += np.where(np.abs(error) > .012, .25 * error, 0)
         arm.command_joint_pos = lag
     now = [0.]
     monkeypatch.setattr(yam.time, 'monotonic', lambda: now[0])
@@ -435,7 +438,7 @@ async def test_zero_ramp_waits_for_lagging_joints(hardware, monkeypatch, mode):
     assert now[0] < 60
     for arm, start in zip(robot.arms, starts):
         commands = np.vstack([start, *arm.commands])
-        assert len(arm.commands) > 12  # A fixed open-loop ramp took 12 ticks.
+        assert len(arm.commands) >= 14  # Ramp plus measured settling checks.
         assert np.max(np.abs(np.diff(commands[:, :6], axis=0))) <= .005 + 1e-12
         assert np.all(np.diff(np.abs(commands[:, :6]), axis=0) <= 1e-12)
         np.testing.assert_array_equal(commands[:, 6], start[6])
@@ -445,7 +448,7 @@ async def test_zero_ramp_waits_for_lagging_joints(hardware, monkeypatch, mode):
 
 
 @pytest.mark.asyncio
-async def test_finish_zero_timeout_does_not_report_success(hardware, monkeypatch):
+async def test_finish_zero_timeout_does_not_report_success(hardware, monkeypatch, capsys):
     cfg = config()
     cfg = replace(cfg, adapter_config={**cfg.adapter_config, 'joint_max_step': [.01]*12,
                                       'joint_step_mode': 'interpolate'})
@@ -453,10 +456,16 @@ async def test_finish_zero_timeout_does_not_report_success(hardware, monkeypatch
     now = [0.]
     monkeypatch.setattr(yam.time, 'monotonic', lambda: now[0])
     async def call(fn, *args): return fn(*args)
-    async def sleep(_): now[0] += 20
+    async def sleep(delay): now[0] += delay
     monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
-    with pytest.raises(RuntimeError, match='timed out'):
+    with pytest.raises(RuntimeError, match='timed out') as error:
         await robot.finish_trial(call)
+    assert 'zero_target_sent=True' in str(error.value)
+    assert 'left_joint6: measured=0.050000, target=0.000000' in str(error.value)
+    assert 'right_joint6' in str(error.value)
+    assert 'zero position reached' not in capsys.readouterr().out
+    for arm in robot.arms:
+        np.testing.assert_array_equal(arm.commands[-1][:6], np.zeros(6))
     robot.close()
 
 
