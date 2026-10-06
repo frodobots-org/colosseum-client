@@ -316,6 +316,48 @@ def test_malformed_sdk_state_is_not_padded(hardware):
     robot.close()
 
 
+def test_gripper_feedback_saturates_without_mutating_sdk_or_joints(hardware, caplog):
+    robot = make_robot(config())
+    robot.arms[0].position[6] = -.02
+    robot.arms[1].position[6] = 1.03
+    for arm in robot.arms:
+        arm.get_joint_pos = lambda arm=arm: arm.position
+    original = [arm.position.copy() for arm in robot.arms]
+    for _ in range(2):
+        obs = robot.get_observation()
+        np.testing.assert_array_equal(obs.gripper, [0, 1])
+        np.testing.assert_allclose(obs.joints, np.r_[original[0][:6], original[1][:6]])
+    assert len(caplog.records) == 4
+    assert 'left_gripper measured normalized value=-0.020000' in caplog.text
+    assert 'right_gripper measured normalized value=1.030000' in caplog.text
+    for arm, value in zip(robot.arms, original):
+        np.testing.assert_array_equal(arm.position, value)
+    # Interpolation and return-home read the same bounded gripper state.
+    robot._validated_action(np.concatenate(robot._read_positions()))
+    robot.close()
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
+def test_nonfinite_gripper_feedback_is_not_clipped(hardware, bad):
+    robot = make_robot(config())
+    robot.arms[1].position[6] = bad
+    with pytest.raises(ValueError, match='7 finite'):
+        robot.get_observation()
+    robot.close()
+
+
+def test_joint_observation_and_action_bounds_are_logged(hardware, caplog):
+    robot = make_robot(config())
+    robot.arms[1].position[2] = 3.25
+    robot.get_observation()
+    assert 'right_joint3: value=3.250000, low=-3.000000, high=3.000000' in caplog.text
+    caplog.clear()
+    with pytest.raises(ValueError, match='action exceeds joint limits'):
+        robot.execute(np.r_[robot.arms[0].position, robot.arms[1].position])
+    assert 'right_joint3: value=3.250000' in caplog.text
+    robot.close()
+
+
 def test_synthetic_yam_uses_same_split_without_loading_hardware(monkeypatch):
     def fail(*_):
         raise AssertionError('Hardware must not load in test mode')

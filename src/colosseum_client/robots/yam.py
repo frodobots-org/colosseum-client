@@ -20,6 +20,18 @@ CAMERAS = ('head_image', 'left_image', 'right_image')
 _CONTROL_JOIN_TIMEOUT = 5.0
 
 
+def _bounds_error(message):
+    log.error('%s', message)
+    raise ValueError(message)
+
+
+def _joint_bounds_details(values, low, high):
+    return '; '.join(
+        f'{"left" if i < 6 else "right"}_joint{i % 6 + 1}: '
+        f'value={values[i]:.6f}, low={low[i]:.6f}, high={high[i]:.6f}'
+        for i in np.flatnonzero((values < low) | (values > high)))
+
+
 def _close_arm(arm):
     """Let I2RT stop its robot loop, then join CAN workers before socket close.
 
@@ -164,7 +176,24 @@ class YAMRobot(Robot):
     def _read_positions(self):
         if self.closed:
             raise RuntimeError('YAM is closed')
-        return [_vector(arm.get_joint_pos(), 7, 'I2RT joint position') for arm in self.arms]
+        positions = []
+        for side, arm in zip(('left', 'right'), self.arms):
+            value = _vector(arm.get_joint_pos(), 7, 'I2RT joint position')
+            # I2RT already normalizes using the calibrated closed/open limits.
+            # Saturate endpoint overshoot; do not normalize a second time or
+            # change measured arm joints. Copies preserve SDK-owned feedback.
+            clipped = float(np.clip(value[6], 0, 1))
+            if clipped != value[6]:
+                log.warning('YAM %s_gripper measured normalized value=%.6f outside [0, 1]; '
+                            'clipped to %.6f. Check calibrated gripper limits if persistent.',
+                            side, value[6], clipped)
+            value[6] = clipped
+            positions.append(value)
+        joints = np.r_[positions[0][:6], positions[1][:6]]
+        details = _joint_bounds_details(joints, self.low, self.high)
+        if details:
+            log.warning('YAM measured joint position outside configured bounds: %s', details)
+        return positions
 
     def get_observation(self):
         if self.closed:
@@ -179,9 +208,11 @@ class YAMRobot(Robot):
         value = _vector(action, 14, 'YAM action')
         joints = np.r_[value[:6], value[7:13]]
         if np.any(joints < self.low) or np.any(joints > self.high):
-            raise ValueError('YAM action exceeds joint limits')
+            _bounds_error('YAM action exceeds joint limits: ' + _joint_bounds_details(joints, self.low, self.high))
         if np.any(value[[6, 13]] < 0) or np.any(value[[6, 13]] > 1):
-            raise ValueError('YAM grippers must be in [0, 1] (0 closed, 1 open)')
+            details = '; '.join(f'{side}_gripper: target={value[i]:.6f}, low=0.000000, high=1.000000'
+                                for side, i in (('left', 6), ('right', 13)) if not 0 <= value[i] <= 1)
+            _bounds_error('YAM grippers must be in [0, 1] (0 closed, 1 open): ' + details)
         return value
 
     def _interpolation(self, action):
@@ -225,7 +256,8 @@ class YAMRobot(Robot):
         left, right = self._read_positions()
         measured = np.r_[left[:6], right[:6]]
         if self.joint_step_mode == 'clip' and (np.any(measured < self.low) or np.any(measured > self.high)):
-            raise ValueError('YAM measured position exceeds joint limits; cannot clip action')
+            _bounds_error('YAM measured position exceeds joint limits; cannot clip action: ' +
+                          _joint_bounds_details(measured, self.low, self.high))
         delta = joints - measured
         exceeded = np.flatnonzero(np.abs(delta) > self.max_step)
         if exceeded.size:
@@ -235,7 +267,7 @@ class YAMRobot(Robot):
                 f'delta={delta[i]:.6f}, limit={self.max_step[i]:.6f}'
                 for i in exceeded)
             if self.joint_step_mode != 'clip':
-                raise ValueError('YAM action exceeds joint_max_step from measured position: ' + details)
+                _bounds_error('YAM action exceeds joint_max_step from measured position: ' + details)
             # Bound each target against fresh feedback, never the previous command.
             # Keep absolute limits strict; do not attempt recovery from outside them.
             limited = measured + np.clip(delta, -self.max_step, self.max_step)
