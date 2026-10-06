@@ -141,8 +141,11 @@ the robot connection remains usable, the Client commands a hold at the measured
 pose and keeps the SDK running instead of automatically releasing torque. Press
 Enter to retry return to zero. Without an interactive terminal it stays holding
 until interrupted. Do not terminate the process while depending on this hold.
-Ctrl-C explicitly shuts down and releases torque, including during recovery.
-Cancellation, test mode and `--no-execute-action` never initiate return motion.
+The first Ctrl-C stops evaluation and attempts return to zero before shutdown,
+including if it arrives during the normal return or error recovery. Do not press
+Ctrl-C again while waiting: Python's repeated-interrupt/forced-exit path may
+release torque without completing return. Test mode and `--no-execute-action`
+never initiate return motion.
 CAN/SDK failure or already-closed hardware cannot guarantee a powered hold;
 failed recovery is reported and resources are cleaned up. This is not a hardware
 safety stop. No physical robot validation has been performed for this feature.

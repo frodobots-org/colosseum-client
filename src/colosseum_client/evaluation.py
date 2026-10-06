@@ -270,7 +270,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 recorder.add(final_observation)
                 print('Finishing recording...', flush=True)
                 await asyncio.to_thread(recorder.close)
-            # Cancellation, synthetic trials and observation-only runs never home.
+            # Synthetic trials and observation-only runs never home.
             finish_robot = getattr(robot, 'finish_trial', None)
             if execute_action and not config.test and finish_robot is not None:
                 return_attempted = True
@@ -280,7 +280,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 await client.finish()
             else:
                 await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
-        except Exception:
+        except (Exception, asyncio.CancelledError) as trial_error:
             # YAM stays powered while recovering an ordinary trial error. Do not
             # mask the original failure or submit the failed run as successful.
             if (config.robot_type == 'yam' and execute_action and not config.test and not return_confirmed
@@ -293,8 +293,9 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                         except Exception:
                             print('Recording close failed during YAM recovery.', flush=True)
                     try:
-                        if not return_attempted:
-                            print('YAM trial error: returning to zero before torque shutdown.', flush=True)
+                        if not return_attempted or isinstance(trial_error, asyncio.CancelledError):
+                            print('YAM trial stopped: returning to zero before torque shutdown. '
+                                  'Do not press Ctrl+C again; forced interruption may release torque.', flush=True)
                             try:
                                 await robot.finish_trial(robot_call)
                             except Exception:
@@ -302,6 +303,17 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                                     raise
                                 await hold(robot_call)
                         else:
+                            await hold(robot_call)
+                    except asyncio.CancelledError:
+                        # First Ctrl+C can arrive during recovery of an earlier
+                        # ordinary error. Restart return instead of dropping torque.
+                        print('YAM recovery interrupted: retrying return to zero. '
+                              'Do not press Ctrl+C again; forced interruption may release torque.', flush=True)
+                        try:
+                            await robot.finish_trial(robot_call)
+                        except Exception:
+                            if getattr(robot, 'closed', False):
+                                raise
                             await hold(robot_call)
                     except Exception as recovery_error:
                         print(f'YAM recovery failed; powered hold cannot be guaranteed: '

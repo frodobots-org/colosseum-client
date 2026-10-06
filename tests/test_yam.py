@@ -330,7 +330,7 @@ def test_synthetic_yam_uses_same_split_without_loading_hardware(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('infer_error', [False, True])
+@pytest.mark.parametrize('infer_error', [False, True, 'cancel'])
 @pytest.mark.parametrize('execute_action', [False, True])
 @pytest.mark.parametrize('return_error', [False, True])
 async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp_path, monkeypatch, hardware, execute_action, infer_error, return_error):
@@ -349,6 +349,8 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
             assert kwargs['before_start'](self.model, {}) is True
             return SimpleNamespace(action_spaces=['joint_position'])
         async def infer(self, obs, **kwargs):
+            if infer_error == 'cancel':
+                raise yam.asyncio.CancelledError('inference failed')
             if infer_error:
                 raise RuntimeError('inference failed')
             assert len(hardware) == 5
@@ -379,7 +381,8 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
         events.append('confirm')
         return True
     if infer_error:
-        with pytest.raises(RuntimeError, match='inference failed'):
+        error_type = yam.asyncio.CancelledError if infer_error == 'cancel' else RuntimeError
+        with pytest.raises(error_type, match='inference failed'):
             await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
                 'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
                 {'id': 'yam-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)

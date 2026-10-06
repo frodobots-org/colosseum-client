@@ -302,15 +302,15 @@ class YAMRobot(Robot):
     async def hold_for_recovery(self, robot_call):
         """Keep SDK position control alive after a failed return, until retried.
 
-        No automatic torque release on a healthy connection. Cancellation is
-        still an explicit shutdown and hardware errors cannot guarantee hold.
+        No automatic torque release on a healthy connection. The evaluation
+        caller handles first cancellation; forced exit cannot guarantee hold.
         """
         while True:
             left, right = await robot_call(self._read_positions)
             await robot_call(self._send_action, np.r_[left, right])
             print('YAM return failed: position hold commanded; automatic torque shutdown paused. '
                   'Keep this process running. Press Enter to retry return to zero. '
-                  'Ctrl+C shuts down and releases torque.', flush=True)
+                  'Repeated Ctrl+C may force shutdown and release torque.', flush=True)
             while not self._retry_zero_requested():
                 await asyncio.sleep(.1)
             try:
