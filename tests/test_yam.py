@@ -332,7 +332,8 @@ def test_synthetic_yam_uses_same_split_without_loading_hardware(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('infer_error', [False, True])
 @pytest.mark.parametrize('execute_action', [False, True])
-async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp_path, monkeypatch, hardware, execute_action, infer_error):
+@pytest.mark.parametrize('return_error', [False, True])
+async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp_path, monkeypatch, hardware, execute_action, infer_error, return_error):
     from types import SimpleNamespace
     from colosseum_client import evaluation, local_policy
     from colosseum_client import colosseum_pb2 as pb
@@ -364,8 +365,15 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
             events.append('close')
     monkeypatch.setattr(local_policy, 'LocalPolicyClient', Client)
     async def finish_robot(self, robot_call):
+        assert all(not arm.closed for arm in self.arms)
         events.append('park')
+        if return_error:
+            raise RuntimeError('return failed')
+    async def hold(self, robot_call):
+        assert all(not arm.closed for arm in self.arms)
+        events.append('hold_and_retry')
     monkeypatch.setattr(yam.YAMRobot, 'finish_trial', finish_robot)
+    monkeypatch.setattr(yam.YAMRobot, 'hold_for_recovery', hold)
     cfg = replace(config(), recording=False)
     def confirm(*_):
         events.append('confirm')
@@ -375,7 +383,14 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
             await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
                 'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
                 {'id': 'yam-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)
-        assert events == ['confirm', 'close']
+        assert events == ['confirm', *(['park'] if execute_action else []),
+                          *(['hold_and_retry'] if execute_action and return_error else []), 'close']
+    elif execute_action and return_error:
+        with pytest.raises(RuntimeError, match='return failed'):
+            await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
+                'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
+                {'id': 'yam-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)
+        assert events == ['confirm', 'park', 'hold_and_retry', 'close']
     else:
         await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
             'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
@@ -383,6 +398,27 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
         assert events == ['confirm', *(['park'] if execute_action else []), 'finish', 'close']
     assert all(resource.closed == 1 for resource in hardware)
     assert len(hardware[3].commands) == int(execute_action and not infer_error)
+
+
+@pytest.mark.asyncio
+async def test_failed_return_holds_power_until_operator_retry(hardware, monkeypatch):
+    robot = make_robot(config())
+    starts = [arm.position.copy() for arm in robot.arms]
+    checks = iter([False, False, True])
+    monkeypatch.setattr(robot, '_retry_zero_requested', lambda: next(checks))
+    async def call(fn, *args): return fn(*args)
+    async def sleep(_):
+        assert all(arm.closed == 0 for arm in robot.arms)
+        for arm, start in zip(robot.arms, starts):
+            np.testing.assert_array_equal(arm.commands[-1], start)
+    retried = []
+    async def finish(_): retried.append(True)
+    monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
+    monkeypatch.setattr(robot, 'finish_trial', finish)
+    await robot.hold_for_recovery(call)
+    assert retried == [True]
+    assert all(arm.closed == 0 for arm in robot.arms)
+    robot.close()
 
 
 @pytest.mark.asyncio

@@ -134,12 +134,18 @@ all measured joint positions and final command targets, in radians. A stalled
 arm still fails confirmation. This is not a hardware speed or tracking bound.
 Model type does not affect this behavior: both LLM and VLA use the robot lifecycle.
 
-Inference failures, Ctrl-C/cancellation, test mode and `--no-execute-action` do
-not initiate this movement. The async ramp allows cancellation between SDK calls.
-Failures during the ramp are reported and the existing cleanup still closes the
-hardware and releases torque; this is not a powered hold or a hardware safety
-stop. Gripper hold is not guaranteed after torque shutdown. No physical robot
-validation has been performed for this feature.
+Ordinary trial errors (including inference errors) also attempt this return
+before hardware shutdown when action execution is enabled. The original error
+is preserved and the trial is not submitted as successful. If return fails but
+the robot connection remains usable, the Client commands a hold at the measured
+pose and keeps the SDK running instead of automatically releasing torque. Press
+Enter to retry return to zero. Without an interactive terminal it stays holding
+until interrupted. Do not terminate the process while depending on this hold.
+Ctrl-C explicitly shuts down and releases torque, including during recovery.
+Cancellation, test mode and `--no-execute-action` never initiate return motion.
+CAN/SDK failure or already-closed hardware cannot guarantee a powered hold;
+failed recovery is reported and resources are cleaned up. This is not a hardware
+safety stop. No physical robot validation has been performed for this feature.
 
 ## Connect the Policy Server
 

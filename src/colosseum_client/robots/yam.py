@@ -6,6 +6,8 @@ SDK close releases motor torque; it is not a powered position hold.
 """
 import asyncio
 import logging
+import select
+import sys
 import time
 import threading
 
@@ -252,13 +254,13 @@ class YAMRobot(Robot):
             raise
 
     async def finish_trial(self, robot_call):
-        """Normal finish only; caller must gate execution and cancellation.
+        """Return to zero; caller must gate execution and cancellation.
 
         Zero refers to calibrated joint angles, not a collision-checked park pose.
         Keep grippers unchanged. Await each short SDK operation on the robot's
         existing executor so cancellation cannot leave a homing thread running.
         """
-        print('YAM normal finish: moving arm joints to zero; grippers unchanged.', flush=True)
+        print('YAM return: moving arm joints to zero; grippers unchanged.', flush=True)
         left, right = await robot_call(self._read_positions)
         self._validated_action(np.r_[left, right])
         target = np.r_[left[:6], right[:6]]
@@ -290,6 +292,34 @@ class YAMRobot(Robot):
             for i in range(12))
         raise RuntimeError('YAM move to zero timed out; position was not confirmed; '
                            f'zero_target_sent={zero_sent}, tolerance=0.020000 rad; {details}')
+
+    @staticmethod
+    def _retry_zero_requested():
+        if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+            return sys.stdin.readline() != ''
+        return False
+
+    async def hold_for_recovery(self, robot_call):
+        """Keep SDK position control alive after a failed return, until retried.
+
+        No automatic torque release on a healthy connection. Cancellation is
+        still an explicit shutdown and hardware errors cannot guarantee hold.
+        """
+        while True:
+            left, right = await robot_call(self._read_positions)
+            await robot_call(self._send_action, np.r_[left, right])
+            print('YAM return failed: position hold commanded; automatic torque shutdown paused. '
+                  'Keep this process running. Press Enter to retry return to zero. '
+                  'Ctrl+C shuts down and releases torque.', flush=True)
+            while not self._retry_zero_requested():
+                await asyncio.sleep(.1)
+            try:
+                await self.finish_trial(robot_call)
+                return
+            except Exception as exc:
+                if self.closed:
+                    raise
+                print(f'YAM return retry failed: {exc}', flush=True)
 
     def close(self):
         if self.closed:

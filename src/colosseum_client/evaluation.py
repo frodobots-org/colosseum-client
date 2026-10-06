@@ -209,6 +209,8 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 action_spaces={robot.action_space_name: robot.action_dim})
             client = ColosseumClient(config.url, config.token, client_id='', **client_options)
         step = 0
+        return_attempted = False
+        return_confirmed = False
         try:
             if local_mode and not config.test and confirm_live is None:
                 raise ProtocolError('Physical local trial requires operator confirmation before RobotEnv construction')
@@ -268,15 +270,43 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 recorder.add(final_observation)
                 print('Finishing recording...', flush=True)
                 await asyncio.to_thread(recorder.close)
-            # Normal completion only: never home in finally, on inference failure,
-            # cancellation, synthetic trials, or observation-only execution.
+            # Cancellation, synthetic trials and observation-only runs never home.
             finish_robot = getattr(robot, 'finish_trial', None)
             if execute_action and not config.test and finish_robot is not None:
+                return_attempted = True
                 await finish_robot(robot_call)
+                return_confirmed = True
             if local_mode:
                 await client.finish()
             else:
                 await asyncio.to_thread(api.request, 'POST', f"/runs/{run['id']}/finish")
+        except Exception:
+            # YAM stays powered while recovering an ordinary trial error. Do not
+            # mask the original failure or submit the failed run as successful.
+            if (config.robot_type == 'yam' and execute_action and not config.test and not return_confirmed
+                    and robot is not None and not getattr(robot, 'closed', False)):
+                hold = getattr(robot, 'hold_for_recovery', None)
+                if hold is not None:
+                    if recorder is not None:
+                        try:
+                            await asyncio.to_thread(recorder.close)
+                        except Exception:
+                            print('Recording close failed during YAM recovery.', flush=True)
+                    try:
+                        if not return_attempted:
+                            print('YAM trial error: returning to zero before torque shutdown.', flush=True)
+                            try:
+                                await robot.finish_trial(robot_call)
+                            except Exception:
+                                if getattr(robot, 'closed', False):
+                                    raise
+                                await hold(robot_call)
+                        else:
+                            await hold(robot_call)
+                    except Exception as recovery_error:
+                        print(f'YAM recovery failed; powered hold cannot be guaranteed: '
+                              f'{recovery_error}', flush=True)
+            raise
         finally:
             resources = [('Client', client.close)]
             if robot is not None:
