@@ -42,7 +42,7 @@ and submit the evaluation. Recordings are saved under `eval_runs/` by default.
 | --- | --- | --- |
 | [Franka](src/colosseum_client/robots/franka.py) | `franka` | Implemented |
 | [SO-ARM101](src/colosseum_client/robots/so101.py) | `so101` | TODO |
-| [Bimanual YAM](src/colosseum_client/robots/yam.py) | `yam` | TODO |
+| [Bimanual YAM](src/colosseum_client/robots/yam.py) | `yam` | [I2RT driver and setup](docs/yam.md); hardware validation pending |
 | [Unitree G1](src/colosseum_client/robots/g1.py) | `g1` | TODO |
 
 [Adding a new robot](docs/robot-adapters.md)

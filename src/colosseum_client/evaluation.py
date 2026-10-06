@@ -192,13 +192,15 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
         robot = None
         local_mode = assignment.get('inference_mode', 'remote') == 'local'
         if local_mode:
-            if not config.test and config.robot_type != 'franka':
-                raise ValueError('Local Policy evaluation currently supports robot_type: franka only')
+            if not config.test and config.robot_type not in {'franka', 'yam'}:
+                raise ValueError('Local Policy evaluation currently supports robot_type: franka or yam')
             from .local_policy import LocalPolicyClient
             client = LocalPolicyClient(
-                config, api_url(config), robot_type=config.robot_type, joint_count=7,
+                config, api_url(config), robot_type=config.robot_type,
+                joint_count=12 if config.robot_type == 'yam' else 7,
                 has_gripper=True, control_hz=config.control_hz,
-                action_spaces={'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7},
+                action_spaces=({'joint_position': 14} if config.robot_type == 'yam' else
+                               {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}),
             )
         else:
             robot = await robot_call(robot_factory, config)
@@ -372,7 +374,10 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                                 f"Maximum control steps: "
                                 f"{prepared_task.get('max_steps', task.get('max_steps'))}."
                             )
-                            print('RobotEnv initialization may reset the robot before any model action.')
+                            if config.robot_type == 'yam':
+                                print('YAM initialization enables position control; shutdown releases motor torque.')
+                            else:
+                                print('RobotEnv initialization may reset the robot before any model action.')
                             return yes_no('Confirm this physical trial may initialize the robot and start')
                         options['confirm_live'] = confirm_live
                     asyncio.run(run_trial(config, assignment, run, run_path, api, **options))

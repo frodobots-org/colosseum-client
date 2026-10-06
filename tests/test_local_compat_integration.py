@@ -123,13 +123,13 @@ async def test_timeout_compatibility_context_is_available():
         await asyncio.sleep(0)
 
 
-def test_local_policy_rejects_non_franka_hardware_before_adapter_construction(tmp_path):
+def test_local_policy_rejects_unsupported_hardware_before_adapter_construction(tmp_path):
     config = RobotClientConfig(
         url='ws://unused', token='unused', cameras={}, robot_type='custom',
         policy_server_url='ws://unused', recording=False,
     )
     assignment = {'inference_mode': 'local', 'task': {'instruction': 'test', 'cameras': [], 'max_steps': 1}}
-    with pytest.raises(ValueError, match='franka only'):
+    with pytest.raises(ValueError, match='franka or yam'):
         asyncio.run(evaluation_module.run_trial(
             config, assignment, {'id': 'run'}, tmp_path, None,
             robot_factory=lambda *args, **kwargs: pytest.fail('adapter must not be constructed'),

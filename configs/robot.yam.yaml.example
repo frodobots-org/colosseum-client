@@ -1,0 +1,32 @@
+url: wss://YOUR_ROUTER/ws
+api_url: https://YOUR_ROUTER
+# Obtain the Client token from your Colosseum administrator.
+token: REPLACE_WITH_CLIENT_TOKEN
+institution: YOUR_INSTITUTION
+robot_type: yam
+track: 1
+policy_server_url: ws://127.0.0.1:8000
+control_hz: 30
+# Native capture is RGB 640x480 at 30 FPS per RealSense camera.
+cameras:
+  head_image: TOP_REALSENSE_SERIAL
+  left_image: LEFT_WRIST_REALSENSE_SERIAL
+  right_image: RIGHT_WRIST_REALSENSE_SERIAL
+adapter_config:
+  left_channel: can_left
+  right_channel: can_right
+  # REQUIRED calibrated raw gripper motor positions, [closed, open].
+  # Passed to I2RT to avoid automatic gripper calibration during startup.
+  left_gripper_limits: null
+  right_gripper_limits: null
+  # REQUIRED 12-element arrays, left six then right six, in radians.
+  joint_low: null
+  joint_high: null
+  # Maximum target distance from measured position for each joint, per execute().
+  joint_max_step: null
+  camera_timeout_ms: 1000
+recording: true
+skip_upload: false
+max_trial_steps: 800
+# test: true bypasses all hardware, including calibration checks.
+test: false

@@ -26,7 +26,7 @@ policy on the Router.
 | `src/colosseum_client/adapters.py` | Select a built-in or external adapter |
 | `src/colosseum_client/robots/franka.py` | Existing Franka driver (`DroidRobot`, using DROID/R2D2) |
 | `src/colosseum_client/robots/so101.py` | SO101 hardware integration TODOs |
-| `src/colosseum_client/robots/yam.py` | YAM hardware integration TODOs |
+| `src/colosseum_client/robots/yam.py` | Bimanual YAM I2RT driver (see [YAM setup](yam.md)) |
 | `src/colosseum_client/robots/g1.py` | G1 hardware integration TODOs |
 | `src/colosseum_client/evaluation.py` | Shared trial, observation and action loop |
 | `src/colosseum_client/local_policy.py` | Local Policy Server transport and lifecycle |
@@ -60,7 +60,7 @@ only re-exports compatibility imports; it contains no separate driver logic.
 
 `test: true` can exercise the synthetic Client workflow when the corresponding
 Router/policy setup is available. It bypasses the hardware adapter entirely and
-does not validate SO101, YAM or G1 state/action mappings. Keep real hardware and
+does not validate real robot state/action mappings. Keep real hardware and
 real inference validation as separate milestones.
 
 ## Available adapters
@@ -69,13 +69,16 @@ real inference validation as separate milestones.
 | --- | --- |
 | `franka` | Existing DROID/R2D2 hardware driver |
 | `so101` | TODO template; no hardware driver |
-| `yam` | TODO template; no hardware driver |
+| `yam` | Bimanual I2RT + three RealSense cameras; [setup and validation limits](yam.md) |
 | `g1` | TODO template; no hardware driver |
+
+YAM requires calibrated limits and connection settings before hardware can open.
 
 Templates are in `src/colosseum_client/robots/`. They raise `NotImplementedError`
 at construction, before opening hardware. Their joint/action dimensions are
 deliberately unspecified: choose the actual controlled joints and policy contract.
-All robots share `configs/robot.yaml.example`. Copy it to `configs/robot.yaml`
+For YAM use `configs/robot.yam.yaml.example` and [the YAM guide](yam.md).
+Other robots share `configs/robot.yaml.example`. Copy it to `configs/robot.yaml`
 and change `robot_type` to `franka`, `so101`, `yam`, `g1`, or an installed external
 robot type. Set the camera IDs and hardware settings for the selected robot.
 
@@ -134,7 +137,7 @@ but require a corresponding Router API change before evaluation can use them.
 `execute` and `close`; Python rejects instantiation if any abstract method is
 missing. Constructors remain driver-specific. Hardware metadata fields must also
 be supplied by the driver; ABC does not validate their values or action semantics.
-The SO101/YAM/G1 skeletons override these methods with `NotImplementedError` and
+The SO101/G1 skeletons override these methods with `NotImplementedError` and
 still fail explicitly in their constructors until hardware support is implemented.
 
 ```python

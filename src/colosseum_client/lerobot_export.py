@@ -54,15 +54,26 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     if [row["frame"] for row in all_rows] != list(range(len(all_rows))):
         raise ValueError("Recording frame indices are not contiguous")
     for row in rows:
-        for key in ("joints", "gripper", "cartesian_position", "action"):
+        for key in ("joints", "gripper", "action"):
             value = np.asarray(row.get(key), dtype=np.float32)
             if value.ndim != 1 or not value.size or not np.isfinite(value).all():
                 raise ValueError(f"Missing or invalid {key}; older recordings may lack full state")
+    cartesian = [np.asarray(row.get("cartesian_position"), dtype=np.float32) for row in rows]
+    if any(v.ndim != 1 or not np.isfinite(v).all() for v in cartesian):
+        raise ValueError("Missing or invalid cartesian_position")
+    if len({v.shape for v in cartesian}) != 1:
+        raise ValueError("Inconsistent cartesian_position shape")
     vectors = {
         "observation.state": [row["joints"] + row["gripper"] for row in rows],
-        "observation.cartesian_position": [row["cartesian_position"] for row in rows],
         "action": [row["action"] for row in rows],
     }
+    if cartesian[0].size:
+        vectors["observation.cartesian_position"] = cartesian
+    if robot_type == "yam":
+        if any(len(row['joints']) != 12 or len(row['gripper']) != 2 or len(row['action']) != 14 for row in rows):
+            raise ValueError("YAM recording requires 12 joints, 2 grippers and 14-D actions")
+        vectors["observation.state"] = [row['joints'][:6] + row['gripper'][:1]
+                                        + row['joints'][6:] + row['gripper'][1:] for row in rows]
     vectors = {key: np.asarray(values, dtype=np.float32) for key, values in vectors.items()}
     capture = np.asarray([row["seconds"] for row in rows], dtype=np.float64)
     if not np.isfinite(capture).all() or np.any(capture < 0) or np.any(np.diff(capture) <= 0):
@@ -73,6 +84,10 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
                "timestamp_semantics": "frame_index / nominal control FPS; no resampling",
                "capture_timestamp_semantics": "original seconds since recorder start",
                "action_semantics": "selected command; not measured execution"}
+    if robot_type == "yam":
+        context["state_action_order"] = "left_joint_1..6,left_gripper,right_joint_1..6,right_gripper"
+        context["state_action_units"] = "radians; grippers normalized 0 closed, 1 open"
+        context["cartesian_state_available"] = bool(cartesian[0].size)
     signature = hashlib.sha256(raw + json.dumps(context, sort_keys=True).encode()).hexdigest()
     destination = path / "lerobot"
     if destination.exists():
@@ -94,6 +109,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
         for key, array in vectors.items():
             names = joint_names + gripper_names if key == "observation.state" else [
                 f"{key.rsplit('.', 1)[-1]}_{i}" for i in range(array.shape[1])]
+            if robot_type == "yam" and key in {"observation.state", "action"}:
+                names = [name for side in ('left', 'right')
+                         for name in [*[f'{side}_joint_{i}' for i in range(1, 7)], f'{side}_gripper']]
             features[key] = {"dtype": "float32", "shape": [array.shape[1]], "names": names}
             columns[key] = pa.array(array.tolist(), type=pa.list_(pa.float32(), array.shape[1]))
             stats[key] = _stats(array)

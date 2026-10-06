@@ -56,6 +56,7 @@ class TestRobot(Robot):
 
     def __init__(self, config):
         import numpy as np
+        self.robot_type = config.robot_type
         self.cameras = list(config.cameras)
         self.width, self.height = config.image_width, config.image_height
         self.joints = np.zeros(7, dtype=np.float32)
@@ -67,7 +68,12 @@ class TestRobot(Robot):
         self.action_dim = model['action_dim']
         self.action_space_name = model['action_space']
         self.joint_count = 7
-        self.joints = np.zeros(7, dtype=np.float32)
+        if self.robot_type == 'yam' and self.action_space_name == 'joint_position':
+            if self.action_dim != 14:
+                raise ValueError('Synthetic YAM requires 14-D joint_position')
+            self.joint_count = 12
+            self.gripper = np.zeros(2, dtype=np.float32)
+        self.joints = np.zeros(self.joint_count, dtype=np.float32)
 
     def get_observation(self):
         import numpy as np
@@ -84,9 +90,13 @@ class TestRobot(Robot):
         value = np.asarray(action,dtype=np.float32)
         if value.shape != (self.action_dim,) or not np.isfinite(value).all():
             raise ValueError('Invalid dummy robot action')
-        if self.action_space_name.startswith('joint'):
-            self.joints = value[:-1].copy()
-        self.gripper = value[-1:].copy()
+        if self.robot_type == 'yam' and self.action_dim == 14 and self.action_space_name == 'joint_position':
+            self.joints = np.r_[value[:6], value[7:13]]
+            self.gripper = value[[6, 13]].copy()
+        else:
+            if self.action_space_name.startswith('joint'):
+                self.joints = value[:-1].copy()
+            self.gripper = value[-1:].copy()
         self.step += 1
 
     def close(self):

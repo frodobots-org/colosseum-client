@@ -87,3 +87,20 @@ def test_incomplete_recording_is_rejected(tmp_path):
     (tmp_path / "recording-status.json").write_text('{"complete": false, "frames": 4}')
     with pytest.raises(ValueError, match="incomplete"):
         export(tmp_path)
+
+
+def test_yam_export_preserves_bimanual_order_without_fabricating_fk(tmp_path):
+    recorder = TrialRecorder(tmp_path, ['head_image', 'left_image', 'right_image'])
+    obs = RobotObservation({c: np.zeros((24, 32, 3), np.uint8) for c in recorder.cameras},
+                           np.arange(12, dtype=np.float32), np.array([.25, .75]), np.empty(0))
+    expected = [0, 1, 2, 3, 4, 5, .25, 6, 7, 8, 9, 10, 11, .75]
+    recorder.add(obs, np.asarray(expected))
+    recorder.close()
+    output = export_trial(tmp_path, recorder.cameras, fps=30, robot_type='yam', task='pick', metadata={})
+    info = json.loads((output / 'meta/info.json').read_text())
+    table = pq.read_table(output / 'data/chunk-000/file-000.parquet').to_pydict()
+    assert table['observation.state'][0] == expected == table['action'][0]
+    assert 'observation.cartesian_position' not in info['features']
+    assert info['features']['action']['names'][6] == 'left_gripper'
+    assert info['features']['action']['names'][13] == 'right_gripper'
+    assert json.loads((output / 'meta/colosseum.json').read_text())['cartesian_state_available'] is False
