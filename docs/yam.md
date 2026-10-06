@@ -75,6 +75,25 @@ other arm and cameras are still closed. This does not make blocked native SDK
 calls cancellable. **I2RT close releases motor torque; it does not hold
 against gravity. Support/park the arms appropriately before shutdown.**
 
+## Optional normal-finish move to zero
+
+Set `adapter_config.move_to_zero_on_finish: true` only after confirming joint
+zero and its path are suitable for the actual dual-arm mounting and workspace.
+This is joint zero, not a calibrated collision-free parking pose. Default is
+false. All twelve joint limits must include zero, checked before hardware opens.
+After Enter/max steps, the Client closes the trial recording, ramps both arms
+at at most 0.15 rad/s in commanded targets, preserves measured gripper positions,
+and requires three readings within 0.02 rad before reporting the run finished.
+Parking is outside the scored recording. The operation times out after 60 seconds.
+Model type does not affect this behavior: both LLM and VLA use the robot lifecycle.
+
+Inference failures, Ctrl-C/cancellation, test mode and `--no-execute-action` do
+not initiate this movement. The async ramp allows cancellation between SDK calls.
+Failures during the ramp are reported and the existing cleanup still closes the
+hardware and releases torque; this is not a powered hold or a hardware safety
+stop. Gripper hold is not guaranteed after torque shutdown. No physical robot
+validation has been performed for this feature.
+
 ## Connect the Policy Server
 
 Follow [the Policy Server YAM guide](../../colosseum-policy-server/docs/yam.md)

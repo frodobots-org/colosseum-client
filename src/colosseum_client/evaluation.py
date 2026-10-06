@@ -265,6 +265,11 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 recorder.add(final_observation)
                 print('Finishing recording...', flush=True)
                 await asyncio.to_thread(recorder.close)
+            # Normal completion only: never home in finally, on inference failure,
+            # cancellation, synthetic trials, or observation-only execution.
+            finish_robot = getattr(robot, 'finish_trial', None)
+            if execute_action and not config.test and finish_robot is not None:
+                await finish_robot(robot_call)
             if local_mode:
                 await client.finish()
             else:

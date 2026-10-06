@@ -194,8 +194,9 @@ def test_synthetic_yam_uses_same_split_without_loading_hardware(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('infer_error', [False, True])
 @pytest.mark.parametrize('execute_action', [False, True])
-async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp_path, monkeypatch, hardware, execute_action):
+async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp_path, monkeypatch, hardware, execute_action, infer_error):
     from types import SimpleNamespace
     from colosseum_client import evaluation, local_policy
     from colosseum_client import colosseum_pb2 as pb
@@ -211,6 +212,8 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
             assert kwargs['before_start'](self.model, {}) is True
             return SimpleNamespace(action_spaces=['joint_position'])
         async def infer(self, obs, **kwargs):
+            if infer_error:
+                raise RuntimeError('inference failed')
             assert len(hardware) == 5
             assert list(obs.state['joint_position'].shape) == [12]
             assert list(obs.state['gripper_position'].shape) == [2]
@@ -224,13 +227,84 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
         async def close(self):
             events.append('close')
     monkeypatch.setattr(local_policy, 'LocalPolicyClient', Client)
+    async def finish_robot(self, robot_call):
+        events.append('park')
+    monkeypatch.setattr(yam.YAMRobot, 'finish_trial', finish_robot)
     cfg = replace(config(), recording=False)
     def confirm(*_):
         events.append('confirm')
         return True
-    await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
-        'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
-        {'id': 'yam-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)
-    assert events == ['confirm', 'finish', 'close']
+    if infer_error:
+        with pytest.raises(RuntimeError, match='inference failed'):
+            await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
+                'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
+                {'id': 'yam-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)
+        assert events == ['confirm', 'close']
+    else:
+        await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
+            'instruction': 'pick', 'cameras': list(yam.CAMERAS), 'max_steps': 1}},
+            {'id': 'yam-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)
+        assert events == ['confirm', *(['park'] if execute_action else []), 'finish', 'close']
     assert all(resource.closed == 1 for resource in hardware)
-    assert len(hardware[3].commands) == int(execute_action)
+    assert len(hardware[3].commands) == int(execute_action and not infer_error)
+
+
+@pytest.mark.asyncio
+async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypatch):
+    cfg = config()
+    cfg = replace(cfg, adapter_config={**cfg.adapter_config, 'move_to_zero_on_finish': True})
+    robot = make_robot(cfg)
+    starts = [arm.position.copy() for arm in robot.arms]
+    for arm in robot.arms:
+        original = arm.command_joint_pos
+        def follow(value, arm=arm, original=original):
+            original(value)
+            arm.position = value.copy()
+        arm.command_joint_pos = follow
+    async def call(fn, *args): return fn(*args)
+    async def sleep(_): pass
+    monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
+    await robot.finish_trial(call)
+    for arm, start in zip(robot.arms, starts):
+        actions = np.vstack([start, *arm.commands])
+        assert np.max(np.abs(np.diff(actions[:, :6], axis=0))) <= .15/30 + 1e-9
+        np.testing.assert_array_equal(actions[:, 6], start[6])
+        np.testing.assert_array_equal(arm.position[:6], np.zeros(6))
+        assert arm.closed == 0
+    robot.close()
+
+
+@pytest.mark.asyncio
+async def test_finish_zero_timeout_does_not_report_success(hardware, monkeypatch):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'move_to_zero_on_finish': True}))
+    now = [0.]
+    monkeypatch.setattr(yam.time, 'monotonic', lambda: now[0])
+    async def call(fn, *args): return fn(*args)
+    async def sleep(_): now[0] += 20
+    monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
+    with pytest.raises(RuntimeError, match='timed out'):
+        await robot.finish_trial(call)
+    robot.close()
+
+
+def test_zero_outside_limits_rejected_before_hardware(hardware):
+    cfg = config()
+    with pytest.raises(ValueError, match='zero within'):
+        make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+            'move_to_zero_on_finish': True, 'joint_low': [.1]*12}))
+    assert hardware == []
+
+
+@pytest.mark.asyncio
+async def test_zero_ramp_cancellation_stops_commands(hardware, monkeypatch):
+    import asyncio
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'move_to_zero_on_finish': True}))
+    async def call(fn, *args): return fn(*args)
+    async def cancel(_): raise asyncio.CancelledError
+    monkeypatch.setattr(yam.asyncio, 'sleep', cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await robot.finish_trial(call)
+    assert all(len(arm.commands) == 1 for arm in robot.arms)
+    robot.close()

@@ -25,6 +25,9 @@ adapter_config:
   # Maximum target distance from measured position for each joint, per execute().
   joint_max_step: null
   camera_timeout_ms: 1000
+  # Enable only after verifying a clear path to joint zero for both arms.
+  # Normal executed trials only; grippers keep their measured position.
+  move_to_zero_on_finish: false
 recording: true
 skip_upload: false
 max_trial_steps: 800
