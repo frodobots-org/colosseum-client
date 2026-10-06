@@ -75,12 +75,14 @@ other arm and cameras are still closed. This does not make blocked native SDK
 calls cancellable. **I2RT close releases motor torque; it does not hold
 against gravity. Support/park the arms appropriately before shutdown.**
 
-## Optional normal-finish move to zero
+## Normal-finish move to zero
 
-Set `adapter_config.move_to_zero_on_finish: true` only after confirming joint
-zero and its path are suitable for the actual dual-arm mounting and workspace.
-This is joint zero, not a calibrated collision-free parking pose. Default is
-false. All twelve joint limits must include zero, checked before hardware opens.
+Normal executed YAM trials always return the arm joints to zero. No config
+switch is required. Confirm joint zero and its path are suitable for the actual
+dual-arm mounting and workspace before executing trials. This is joint zero,
+not a calibrated collision-free parking pose. All twelve joint limits must
+include zero, checked before hardware opens. Remove the former
+`move_to_zero_on_finish` field if it was added to an existing config.
 After Enter/max steps, the Client closes the trial recording, ramps both arms
 at at most 0.15 rad/s in commanded targets, preserves measured gripper positions,
 and requires three readings within 0.02 rad before reporting the run finished.

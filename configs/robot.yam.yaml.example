@@ -20,14 +20,12 @@ adapter_config:
   left_gripper_limits: null
   right_gripper_limits: null
   # REQUIRED 12-element arrays, left six then right six, in radians.
+  # Limits must include zero: normal executed trials return both arms to joint zero.
   joint_low: null
   joint_high: null
   # Maximum target distance from measured position for each joint, per execute().
   joint_max_step: null
   camera_timeout_ms: 1000
-  # Enable only after verifying a clear path to joint zero for both arms.
-  # Normal executed trials only; grippers keep their measured position.
-  move_to_zero_on_finish: false
 recording: true
 skip_upload: false
 max_trial_steps: 800

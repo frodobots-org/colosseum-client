@@ -252,7 +252,6 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
 @pytest.mark.asyncio
 async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypatch):
     cfg = config()
-    cfg = replace(cfg, adapter_config={**cfg.adapter_config, 'move_to_zero_on_finish': True})
     robot = make_robot(cfg)
     starts = [arm.position.copy() for arm in robot.arms]
     for arm in robot.arms:
@@ -277,7 +276,7 @@ async def test_finish_zero_ramp_preserves_grippers_and_limits(hardware, monkeypa
 @pytest.mark.asyncio
 async def test_finish_zero_timeout_does_not_report_success(hardware, monkeypatch):
     cfg = config()
-    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'move_to_zero_on_finish': True}))
+    robot = make_robot(cfg)
     now = [0.]
     monkeypatch.setattr(yam.time, 'monotonic', lambda: now[0])
     async def call(fn, *args): return fn(*args)
@@ -292,7 +291,7 @@ def test_zero_outside_limits_rejected_before_hardware(hardware):
     cfg = config()
     with pytest.raises(ValueError, match='zero within'):
         make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
-            'move_to_zero_on_finish': True, 'joint_low': [.1]*12}))
+            'joint_low': [.1]*12}))
     assert hardware == []
 
 
@@ -300,7 +299,7 @@ def test_zero_outside_limits_rejected_before_hardware(hardware):
 async def test_zero_ramp_cancellation_stops_commands(hardware, monkeypatch):
     import asyncio
     cfg = config()
-    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'move_to_zero_on_finish': True}))
+    robot = make_robot(cfg)
     async def call(fn, *args): return fn(*args)
     async def cancel(_): raise asyncio.CancelledError
     monkeypatch.setattr(yam.asyncio, 'sleep', cancel)

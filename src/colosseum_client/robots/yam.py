@@ -111,7 +111,7 @@ class YAMRobot(Robot):
         settings = dict(config.adapter_config)
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
-                   'joint_max_step', 'camera_timeout_ms', 'move_to_zero_on_finish'}
+                   'joint_max_step', 'camera_timeout_ms'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
         self.low = _vector(settings.get('joint_low'), 12, 'joint_low')
@@ -119,11 +119,8 @@ class YAMRobot(Robot):
         self.max_step = _vector(settings.get('joint_max_step'), 12, 'joint_max_step')
         if np.any(self.low >= self.high) or np.any(self.max_step <= 0):
             raise ValueError('YAM requires joint_low < joint_high and positive joint_max_step')
-        self.move_to_zero_on_finish = settings.get('move_to_zero_on_finish', False)
-        if type(self.move_to_zero_on_finish) is not bool:
-            raise ValueError('move_to_zero_on_finish must be boolean')
-        if self.move_to_zero_on_finish and (np.any(self.low > 0) or np.any(self.high < 0)):
-            raise ValueError('move_to_zero_on_finish requires zero within all joint limits')
+        if np.any(self.low > 0) or np.any(self.high < 0):
+            raise ValueError('YAM normal finish requires zero within all joint limits')
         channels = [settings.get(f'{side}_channel') for side in ('left', 'right')]
         if any(not isinstance(c, str) or not c.strip() for c in channels) or channels[0] == channels[1]:
             raise ValueError('YAM requires distinct left_channel and right_channel')
@@ -190,14 +187,12 @@ class YAMRobot(Robot):
             raise
 
     async def finish_trial(self, robot_call):
-        """Opt-in normal finish only; caller must gate execution and cancellation.
+        """Normal finish only; caller must gate execution and cancellation.
 
         Zero refers to calibrated joint angles, not a collision-checked park pose.
         Keep grippers unchanged. Await each short SDK operation on the robot's
         existing executor so cancellation cannot leave a homing thread running.
         """
-        if not self.move_to_zero_on_finish:
-            return
         print('YAM normal finish: moving arm joints to zero; grippers unchanged.', flush=True)
         left, right = await robot_call(self._read_positions)
         target = np.r_[left[:6], right[:6]]
