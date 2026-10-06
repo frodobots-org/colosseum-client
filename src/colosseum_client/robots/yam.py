@@ -113,13 +113,18 @@ class YAMRobot(Robot):
         settings = dict(config.adapter_config)
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
-                   'joint_max_step', 'joint_step_mode', 'camera_timeout_ms'}
+                   'joint_max_step', 'joint_step_mode', 'zero_position_tolerance', 'camera_timeout_ms'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
         self.low = _vector(settings.get('joint_low'), 12, 'joint_low')
         self.high = _vector(settings.get('joint_high'), 12, 'joint_high')
         self.max_step = _vector(settings.get('joint_max_step'), 12, 'joint_max_step')
         self.joint_step_mode = settings.get('joint_step_mode', 'reject')
+        tolerance = settings.get('zero_position_tolerance', .05)
+        if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
+                or not np.isfinite(tolerance) or not 0 < tolerance <= .1):
+            raise ValueError('zero_position_tolerance must be in (0, 0.1] radians')
+        self.zero_position_tolerance = float(tolerance)
         if self.joint_step_mode not in ('reject', 'clip', 'interpolate'):
             raise ValueError('joint_step_mode must be reject, clip or interpolate')
         if np.any(self.low >= self.high) or np.any(self.max_step <= 0):
@@ -282,7 +287,7 @@ class YAMRobot(Robot):
             await asyncio.sleep(1 / 30)
             left, right = await robot_call(self._read_positions)
             measured = np.r_[left[:6], right[:6]]
-            settled = settled + 1 if np.all(target == 0) and np.all(np.abs(measured) <= .02) else 0
+            settled = settled + 1 if np.all(target == 0) and np.all(np.abs(measured) <= self.zero_position_tolerance) else 0
             if settled >= 3:
                 print('YAM zero position reached; proceeding to torque shutdown.', flush=True)
                 return
@@ -291,13 +296,21 @@ class YAMRobot(Robot):
             f'measured={measured[i]:.6f}, target={target[i]:.6f}'
             for i in range(12))
         raise RuntimeError('YAM move to zero timed out; position was not confirmed; '
-                           f'zero_target_sent={zero_sent}, tolerance=0.020000 rad; {details}')
+                           f'zero_target_sent={zero_sent}, tolerance={self.zero_position_tolerance:.6f} rad; {details}')
 
     @staticmethod
-    def _retry_zero_requested():
+    def _zero_recovery_choice():
         if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
-            return sys.stdin.readline() != ''
-        return False
+            line = sys.stdin.readline()
+            if line == '':
+                return None
+            choice = line.strip().lower()
+            if choice == '':
+                return 'retry'
+            if choice in ('s', 'skip'):
+                return 'skip'
+            print('Press Enter to retry, or type s then Enter to skip and release torque.', flush=True)
+        return None
 
     async def hold_for_recovery(self, robot_call):
         """Keep SDK position control alive after a failed return, until retried.
@@ -309,10 +322,17 @@ class YAMRobot(Robot):
             left, right = await robot_call(self._read_positions)
             await robot_call(self._send_action, np.r_[left, right])
             print('YAM return failed: position hold commanded; automatic torque shutdown paused. '
-                  'Keep this process running. Press Enter to retry return to zero. '
+                  'Keep this process running. Press Enter to retry return to zero, '
+                  'or type s then Enter to SKIP and RELEASE TORQUE (support the arms first). '
                   'Repeated Ctrl+C may force shutdown and release torque.', flush=True)
-            while not self._retry_zero_requested():
+            choice = self._zero_recovery_choice()
+            while choice is None:
                 await asyncio.sleep(.1)
+                choice = self._zero_recovery_choice()
+            if choice == 'skip':
+                print('YAM return skipped by operator; zero position NOT confirmed. '
+                      'Proceeding to torque shutdown.', flush=True)
+                return
             try:
                 await self.finish_trial(robot_call)
                 return

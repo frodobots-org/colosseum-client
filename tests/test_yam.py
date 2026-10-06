@@ -407,8 +407,8 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
 async def test_failed_return_holds_power_until_operator_retry(hardware, monkeypatch):
     robot = make_robot(config())
     starts = [arm.position.copy() for arm in robot.arms]
-    checks = iter([False, False, True])
-    monkeypatch.setattr(robot, '_retry_zero_requested', lambda: next(checks))
+    checks = iter([None, None, 'retry'])
+    monkeypatch.setattr(robot, '_zero_recovery_choice', lambda: next(checks))
     async def call(fn, *args): return fn(*args)
     async def sleep(_):
         assert all(arm.closed == 0 for arm in robot.arms)
@@ -421,6 +421,56 @@ async def test_failed_return_holds_power_until_operator_retry(hardware, monkeypa
     await robot.hold_for_recovery(call)
     assert retried == [True]
     assert all(arm.closed == 0 for arm in robot.arms)
+    robot.close()
+
+
+@pytest.mark.asyncio
+async def test_operator_can_skip_failed_return_without_retry(hardware, monkeypatch, capsys):
+    robot = make_robot(config())
+    monkeypatch.setattr(robot, '_zero_recovery_choice', lambda: 'skip')
+    async def call(fn, *args): return fn(*args)
+    async def forbidden(_): pytest.fail('Skip must not retry return')
+    monkeypatch.setattr(robot, 'finish_trial', forbidden)
+    await robot.hold_for_recovery(call)
+    assert not robot.closed  # Caller owns final shutdown, after explicit release.
+    assert 'zero position NOT confirmed' in capsys.readouterr().out
+    robot.close()
+    assert all(arm.closed == 1 for arm in robot.arms)
+
+
+@pytest.mark.parametrize('line,expected', [('\n', 'retry'), ('s\n', 'skip'),
+    ('skip\n', 'skip'), ('wrong\n', None), ('', None)])
+def test_zero_recovery_input(line, expected, monkeypatch):
+    import io
+    stream = io.StringIO(line)
+    monkeypatch.setattr(stream, 'isatty', lambda: True)
+    monkeypatch.setattr(yam.sys, 'stdin', stream)
+    monkeypatch.setattr(yam.select, 'select', lambda *args: ([stream], [], []))
+    assert yam.YAMRobot._zero_recovery_choice() == expected
+
+
+@pytest.mark.parametrize('value', [0, -.01, .2, float('nan'), float('inf'), True, '0.05'])
+def test_invalid_zero_tolerance_opens_no_hardware(hardware, value):
+    cfg = config()
+    with pytest.raises(ValueError, match='zero_position_tolerance'):
+        make_robot(replace(cfg, adapter_config={**cfg.adapter_config, 'zero_position_tolerance': value}))
+    assert hardware == []
+
+
+@pytest.mark.asyncio
+async def test_default_zero_tolerance_accepts_reported_residual(hardware, monkeypatch):
+    robot = make_robot(config())
+    for arm in robot.arms:
+        arm.position[:6] = 0
+    robot.arms[1].position[3] = -.027657
+    async def call(fn, *args): return fn(*args)
+    async def sleep(_): pass
+    monkeypatch.setattr(yam.asyncio, 'sleep', sleep)
+    await robot.finish_trial(call)
+    assert robot.zero_position_tolerance == .05
+    np.testing.assert_array_equal(robot.arms[1].commands[-1][:6], np.zeros(6))
+    # Still requires three confirmations after sending zero, not just one.
+    assert sum(np.all(c[:6] == 0) for c in robot.arms[1].commands) >= 3
     robot.close()
 
 
@@ -490,7 +540,7 @@ async def test_zero_ramp_reaches_zero_despite_feedback_deadband(hardware, monkey
 async def test_finish_zero_timeout_does_not_report_success(hardware, monkeypatch, capsys):
     cfg = config()
     cfg = replace(cfg, adapter_config={**cfg.adapter_config, 'joint_max_step': [.01]*12,
-                                      'joint_step_mode': 'interpolate'})
+                                      'joint_step_mode': 'interpolate', 'zero_position_tolerance': .02})
     robot = make_robot(cfg)
     now = [0.]
     monkeypatch.setattr(yam.time, 'monotonic', lambda: now[0])

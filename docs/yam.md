@@ -122,7 +122,10 @@ include zero, checked before hardware opens. Remove the former
 `move_to_zero_on_finish` field if it was added to an existing config.
 After Enter/max steps, the Client closes the trial recording, ramps both arms
 at at most 0.15 rad/s in commanded targets, preserves measured gripper positions,
-and requires three readings within 0.02 rad before reporting the run finished.
+and requires three consecutive readings within `zero_position_tolerance`
+(default 0.05 rad, about 2.86 degrees) before reporting the run finished.
+Set this positive tolerance in `adapter_config`, up to 0.1 rad. It only changes
+arrival confirmation, not the commanded zero target or interpolation speed.
 Parking is outside the scored recording. The operation times out after 60 seconds.
 The zero ramp sends the full trajectory independently of measured tracking lag,
 with command increments bounded by both `joint_max_step` and 0.15 rad/s at 30 Hz.
@@ -139,7 +142,10 @@ before hardware shutdown when action execution is enabled. The original error
 is preserved and the trial is not submitted as successful. If return fails but
 the robot connection remains usable, the Client commands a hold at the measured
 pose and keeps the SDK running instead of automatically releasing torque. Press
-Enter to retry return to zero. Without an interactive terminal it stays holding
+Enter to retry return to zero, or type `s` followed by Enter to skip return and
+allow torque shutdown after supporting the arms. Skip is explicit operator
+release, not confirmed arrival; the original run error remains. There is no
+automatic release after a retry count. Without an interactive terminal it stays holding
 until interrupted. Do not terminate the process while depending on this hold.
 The first Ctrl-C stops evaluation and attempts return to zero before shutdown,
 including if it arrives during the normal return or error recovery. Do not press

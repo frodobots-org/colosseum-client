@@ -30,6 +30,8 @@ adapter_config:
   # target is sent; joint_max_step bounds command increments in this mode.
   # clip: truncate a target to measured +/- joint_max_step and continue.
   joint_step_mode: reject
+  # Return-to-zero arrival tolerance, radians; independent of interpolation step.
+  zero_position_tolerance: 0.05
   camera_timeout_ms: 1000
 recording: true
 skip_upload: false

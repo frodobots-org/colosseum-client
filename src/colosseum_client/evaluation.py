@@ -298,11 +298,13 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                                   'Do not press Ctrl+C again; forced interruption may release torque.', flush=True)
                             try:
                                 await robot.finish_trial(robot_call)
-                            except Exception:
+                            except Exception as return_error:
+                                print(f'YAM return failed: {return_error}', flush=True)
                                 if getattr(robot, 'closed', False):
                                     raise
                                 await hold(robot_call)
                         else:
+                            print(f'YAM return failed: {trial_error}', flush=True)
                             await hold(robot_call)
                     except asyncio.CancelledError:
                         # First Ctrl+C can arrive during recovery of an earlier
