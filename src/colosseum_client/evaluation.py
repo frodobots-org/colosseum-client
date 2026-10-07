@@ -254,7 +254,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     plan = await client.infer(observation, deadline_ms=config.deadline_ms)
                     actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
                     chunk_index = 0
-                    print(f'Received action chunk at step {step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
+                    print(f'Received action chunk at step {step}: {len(actions)} actions (execution {"enabled" if execute_action else "skipped"}).', flush=True)
                 action = actions[chunk_index]
                 if recorder is not None:
                     recorder.add(current, action, captured_at=captured_at)
