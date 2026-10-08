@@ -43,6 +43,33 @@ coordinate mismatches; it does not recalibrate, prove the endpoints are physical
 correct, or replace thermal protection. The SDK still initializes/enables motors
 before this check; this is not a hardware power isolation mechanism.
 
+Save `motor_offset[6]` with the gripper calibration. The SDK can choose different
+startup offsets depending on the initial encoder position. Optional adapter keys
+`left_gripper_calibration_offset` and `right_gripper_calibration_offset` are the
+raw motor offsets **at calibration time**, in radians. When present, the Client
+uses `effective_limits = calibrated_limits + (calibration_offset - startup_offset)
+* motor_direction`. This preserves the physical encoder endpoints; it does not
+expand the stroke or infer calibration from the current pose. The SDK direction
+must remain the same as during calibration. SET_ZERO invalidates this reference;
+recalibrate and record a new offset after changing the hardware zero.
+
+For example, a calibration measured with offset `-2*pi` can be retained as:
+
+```yaml
+adapter_config:
+  left_gripper_limits: [6.490135791653531, 1.180377647150591]
+  left_gripper_calibration_offset: -6.283185307179586
+```
+
+At startup offset zero this yields effective limits approximately
+`[0.20695048, -5.10280766]`; at startup offset `-2*pi` the original limits apply.
+Use only your own measured calibration and recorded offset. An omitted/null key
+keeps the legacy interpretation and startup check. The startup JSON reports both
+the calibrated and effective endpoints. Before position hold, the Client updates
+the pinned SDK's mapping, endpoint clipper and normalized feedback under its
+command/state locks. Motor offsets themselves, arm gains, and thermal protections
+are unchanged. A remaining mismatch still aborts initialization.
+
 The Client prints one `yam_gripper_telemetry` JSON line per arm every second
 after initialization, including while policy inference is pending. Fields include
 `side`, CAN `channel`, `motor_id: 7`, `mos_temperature_c`, `rotor_temperature_c`,

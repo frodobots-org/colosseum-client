@@ -78,7 +78,34 @@ def _vector(value, size, name):
     return result.copy()
 
 
-def _open_arm(channel, gripper_limits):
+def _rebase_gripper_limits(arm, limits):
+    """Change only the gripper mapping while startup gripper control is passive.
+
+    I2RT stores the limits in both JointMapper and the final target clipper.
+    Update both and refresh normalized feedback atomically with its robot loop.
+    Motor offsets, directions and arm control parameters remain unchanged.
+    """
+    from i2rt.robots.utils import JointMapper
+    mapper = JointMapper(index_range_map={6: limits}, total_dofs=7)
+    with arm._command_lock, arm._state_lock:
+        if (arm._gripper_index != 6 or len(arm.motor_chain) != 7
+                or any(getattr(arm._commands, name)[6] != 0
+                       for name in ('kp', 'kd', 'torques'))):
+            raise RuntimeError('Cannot rebase gripper calibration while gripper control is active')
+        states = arm.motor_chain.read_states()
+        if len(states) != 7 or states[6].id != 7:
+            raise RuntimeError('Unexpected I2RT motor order during gripper calibration rebase')
+        arm._gripper_limits = limits.copy()
+        arm.remapper = mapper
+        arm._joint_state = arm._motor_state_to_joint_state(states)
+        arm._commands.pos[6] = states[6].pos
+        arm._last_gripper_command_qpos = states[6].pos
+        # Discard any startup limiter target computed using the old mapping.
+        arm._gripper_force_limiter._gripper_adjusted_qpos = None
+        arm._gripper_force_limiter._is_clogged = False
+
+
+def _open_arm(channel, gripper_limits, *, calibration_offset=None):
     try:
         from i2rt.robots.get_robot import get_yam_robot
         from i2rt.robots.utils import GripperType
@@ -91,16 +118,30 @@ def _open_arm(channel, gripper_limits):
                         zero_gravity_mode=True)
     try:
         chain = arm.motor_chain
+        calibrated = _vector(gripper_limits, 2, 'gripper_limits')
+        limits = calibrated.copy()
+        offsets = _vector(chain.motor_offset, 7, 'I2RT motor_offset')
+        directions = _vector(chain.motor_direction, 7, 'I2RT motor_direction')
+        if calibration_offset is not None:
+            if directions[6] not in (-1, 1):
+                raise RuntimeError('Gripper motor direction must be +1 or -1')
+            # SDK q = (raw - offset) * direction. Preserve raw physical endpoints.
+            shift = (calibration_offset - offsets[6]) * directions[6]
+            limits += shift
+            if not np.isfinite(limits).all() or limits[0] == limits[1]:
+                raise ValueError('Invalid rebased gripper limits')
+            if shift != 0:
+                _rebase_gripper_limits(arm, limits)
         state = next(s for s in chain.read_states() if s.id == 7)
         measured = float(state.pos)  # SDK direction/offset-adjusted radians.
         current = _vector(arm.get_joint_pos(), 7, 'I2RT startup joint position')
-        limits = _vector(gripper_limits, 2, 'gripper_limits')
-        offsets = _vector(chain.motor_offset, 7, 'I2RT motor_offset')
-        directions = _vector(chain.motor_direction, 7, 'I2RT motor_direction')
         print(json.dumps({
             'event': 'yam_gripper_startup', 'channel': channel, 'motor_id': 7,
-            'calibrated_closed_rad': float(limits[0]),
-            'calibrated_open_rad': float(limits[1]),
+            'calibrated_closed_rad': float(calibrated[0]),
+            'calibrated_open_rad': float(calibrated[1]),
+            'calibration_offset_rad': calibration_offset,
+            'effective_closed_rad': float(limits[0]),
+            'effective_open_rad': float(limits[1]),
             'measured_position_rad': measured,
             'measured_normalized': float(current[6]),
             'motor_offset_rad': float(offsets[6]),
@@ -169,6 +210,7 @@ class YAMRobot(Robot):
         settings = dict(config.adapter_config)
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
+                   'left_gripper_calibration_offset', 'right_gripper_calibration_offset',
                    'joint_max_step', 'joint_step_mode', 'zero_position_tolerance', 'camera_timeout_ms'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
@@ -194,6 +236,14 @@ class YAMRobot(Robot):
                   for side in ('left', 'right')]
         if any(v[0] == v[1] for v in limits):
             raise ValueError('Gripper limits must be distinct calibrated [closed, open] positions')
+        calibration_offsets = []
+        for side in ('left', 'right'):
+            name = f'{side}_gripper_calibration_offset'
+            value = settings.get(name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not np.isfinite(value)):
+                raise ValueError(f'{name} must be finite radians or null')
+            calibration_offsets.append(None if value is None else float(value))
         if set(config.cameras) != set(CAMERAS) or len(set(config.cameras.values())) != 3:
             raise ValueError('YAM requires three distinct cameras: head_image, left_image, right_image')
         if config.control_hz != 30:
@@ -209,8 +259,11 @@ class YAMRobot(Robot):
             for name in CAMERAS:
                 self.cameras[name] = _RealSenseCamera(config.cameras[name], timeout)
                 self.cameras[name].read()
-            for channel, calibration in zip(channels, limits):
-                self.arms.append(_open_arm(channel, calibration))
+            for channel, calibration, offset in zip(channels, limits, calibration_offsets):
+                if offset is None:
+                    self.arms.append(_open_arm(channel, calibration))
+                else:
+                    self.arms.append(_open_arm(channel, calibration, calibration_offset=offset))
             self._read_positions()
             self._start_gripper_telemetry()
         except BaseException:

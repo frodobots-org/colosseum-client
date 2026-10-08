@@ -159,6 +159,109 @@ def hardware(monkeypatch):
     return opened
 
 
+@pytest.mark.parametrize('runtime_offset', [0., -2*np.pi, 2*np.pi])
+@pytest.mark.parametrize('direction', [1., -1.])
+@pytest.mark.parametrize('reference_error', [0., 100.])
+def test_calibration_offset_preserves_physical_endpoints(
+        monkeypatch, capsys, runtime_offset, direction, reference_error):
+    raw_limits = np.array([.20695048447394493, -5.102807660028995])
+    calibration_offset = -2*np.pi
+    calibrated = (raw_limits - calibration_offset) * direction
+    original = calibrated.copy()
+    raw_position = .0211718929
+    measured = (raw_position - runtime_offset) * direction
+    states = [SimpleNamespace(id=i+1, pos=.01*i) for i in range(6)]
+    states.append(SimpleNamespace(id=7, pos=measured))
+    class Mapper:
+        def __init__(self, index_range_map, total_dofs):
+            assert total_dofs == 7
+            self.limits = np.array(index_range_map[6], copy=True)
+        def to_command_joint_pos_space(self, values):
+            value = np.array(values, copy=True)
+            value[6] = (value[6]-self.limits[0])/(self.limits[1]-self.limits[0])
+            return value
+        def to_robot_joint_pos_space(self, values):
+            value = np.array(values, copy=True)
+            value[6] = self.limits[0]+value[6]*(self.limits[1]-self.limits[0])
+            return value
+    class Chain:
+        running = True
+        motor_offset = np.r_[np.zeros(6), runtime_offset]
+        motor_direction = np.r_[np.ones(6), direction]
+        def __len__(self): return 7
+        def read_states(self): return states
+    class Arm:
+        motor_chain = Chain()
+        _gripper_index = 6
+        _command_lock = threading.Lock()
+        _state_lock = threading.Lock()
+        _gripper_limits = calibrated.copy()
+        remapper = Mapper({6: calibrated}, 7)
+        _commands = SimpleNamespace(**{name: np.zeros(7) for name in ('kp', 'kd', 'torques', 'pos')})
+        _gripper_force_limiter = SimpleNamespace(_gripper_adjusted_qpos=None, _is_clogged=False)
+        closed = False
+        def _motor_state_to_joint_state(self, values):
+            return SimpleNamespace(pos=self.remapper.to_command_joint_pos_space([s.pos for s in values]))
+        def get_joint_pos(self): return self._joint_state.pos.copy()
+        def command_joint_pos(self, values):
+            self.target = self.remapper.to_robot_joint_pos_space(values)
+            self._commands.kp[6] = 8  # Hold starts only after the rebase/check.
+        def close(self): self.closed = True
+    arm = Arm()
+    arm._joint_state = arm._motor_state_to_joint_state(states)
+    def factory(**kwargs):
+        assert kwargs['zero_gravity_mode'] is True
+        return arm
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.get_robot', SimpleNamespace(get_yam_robot=factory))
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.utils', SimpleNamespace(
+        GripperType=SimpleNamespace(LINEAR_4310='linear_4310'), JointMapper=Mapper))
+    if reference_error:
+        with pytest.raises(RuntimeError, match='startup mismatch'):
+            yam._open_arm('can_left', calibrated,
+                          calibration_offset=calibration_offset + reference_error)
+        assert arm.closed
+        assert not hasattr(arm, 'target')
+        return
+    result = yam._open_arm('can_left', calibrated, calibration_offset=calibration_offset)
+    assert result is arm and not arm.closed
+    np.testing.assert_allclose(arm.target[:6], [s.pos for s in states[:6]])
+    assert arm.target[6]*direction + runtime_offset == pytest.approx(raw_position)
+    np.testing.assert_allclose(arm._gripper_limits*direction + runtime_offset, raw_limits)
+    for opening in (0., .5, 1.):
+        target = arm.remapper.to_robot_joint_pos_space(np.r_[np.zeros(6), opening])[6]
+        assert target*direction + runtime_offset == pytest.approx(
+            raw_limits[0] + opening*(raw_limits[1]-raw_limits[0]))
+    np.testing.assert_array_equal(calibrated, original)
+    entry = json.loads(capsys.readouterr().out)
+    assert entry['calibration_offset_rad'] == calibration_offset
+    assert entry['motor_offset_rad'] == runtime_offset
+    with pytest.raises(RuntimeError, match='control is active'):
+        yam._rebase_gripper_limits(arm, calibrated)
+
+
+@pytest.mark.parametrize('offset', [float('nan'), float('inf'), True, '-6.28'])
+def test_invalid_calibration_offset_opens_nothing(hardware, offset):
+    cfg = config()
+    with pytest.raises(ValueError, match='calibration_offset'):
+        make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+            'left_gripper_calibration_offset': offset}))
+    assert hardware == []
+
+
+def test_calibration_offset_is_routed_to_correct_arm(hardware, monkeypatch):
+    factory = yam._open_arm
+    calls = []
+    def record(channel, limits, **kwargs):
+        calls.append((channel, kwargs))
+        return factory(channel, limits)
+    monkeypatch.setattr(yam, '_open_arm', record)
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+        'left_gripper_calibration_offset': -2*np.pi}))
+    assert calls == [('can_left', {'calibration_offset': -2*np.pi}), ('can_right', {})]
+    robot.close()
+
+
 def test_state_and_action_order_and_close(hardware):
     robot = make_robot(config())
     obs = robot.get_observation()
