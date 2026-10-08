@@ -20,6 +20,7 @@ GRIPPER_RANGE = (0.0, 100.0)
 _CAMERA_TYPES = ('realsense', 'opencv')
 _RETURN_HZ = 30
 _CONNECT_ATTEMPTS = 3
+_SETTLE_SECONDS = 0.5
 
 
 def _vector(value, size, name):
@@ -101,7 +102,7 @@ class SO101Robot(Robot):
         settings = dict(config.adapter_config)
         allowed = {'port', 'robot_id', 'calibration_dir', 'camera_types', 'camera_width',
                    'camera_height', 'camera_fps', 'joint_low', 'joint_high',
-                   'max_relative_target', 'return_to_start', 'return_step_deg'}
+                   'max_relative_target', 'return_to_start', 'return_step_deg', 'start_poses'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown SO101 settings: {sorted(settings.keys() - allowed)}')
         port, robot_id = settings.get('port'), settings.get('robot_id')
@@ -124,6 +125,16 @@ class SO101Robot(Robot):
         self.return_step = settings.get('return_step_deg', 1.5)
         if type(self.return_step) not in (int, float) or not 0 < self.return_step <= 10:
             raise ValueError('return_step_deg must be in (0, 10]')
+        start_poses = settings.get('start_poses', {})
+        if not isinstance(start_poses, dict) or any(not isinstance(key, str) or not key for key in start_poses):
+            raise ValueError('start_poses must map a model runtime_profile, subfolder or URL to six values')
+        self.start_poses = {}
+        for key, pose in start_poses.items():
+            pose = _vector(pose, 6, f'start_poses[{key!r}]')
+            if (np.any(pose[:5] < self.low) or np.any(pose[:5] > self.high)
+                    or not GRIPPER_RANGE[0] <= pose[5] <= GRIPPER_RANGE[1]):
+                raise ValueError(f'start_poses[{key!r}] is outside the joint limits')
+            self.start_poses[key] = pose
         sizes = [settings.get(name, default) for name, default in
                  (('camera_width', 640), ('camera_height', 480), ('camera_fps', 30))]
         if any(type(v) is not int or v <= 0 for v in sizes):
@@ -186,12 +197,32 @@ class SO101Robot(Robot):
         value[5] = np.clip(value[5], *GRIPPER_RANGE)
         self._send(value)
 
-    def _return_to_start(self):
+    def _move_to(self, target):
         current = self._positions(self.follower.get_observation())
-        steps = int(np.ceil(np.max(np.abs(self.start - current)) / self.return_step))
+        steps = int(np.ceil(np.max(np.abs(target - current)) / self.return_step))
         for index in range(1, steps + 1):
-            self._send(current + (self.start - current) * index / steps)
+            self._send(current + (target - current) * index / steps)
             time.sleep(1 / _RETURN_HZ)
+
+    def _return_to_start(self):
+        self._move_to(self.start)
+
+    def prepare_for_model(self, model):
+        """Move to the start pose configured for the assigned model, if any.
+
+        Some checkpoints are deployed upstream from a fixed home pose and degrade
+        from a folded rest pose. Shutdown still returns to the pose measured at
+        start-up. Returns the matched start_poses key, or None.
+        """
+        if self.closed:
+            raise RuntimeError('SO101 is closed')
+        for key in (model.get('runtime_profile'), model.get('subfolder'), model.get('url')):
+            if key and key in self.start_poses:
+                log.info('SO101 moving to the start pose configured for %s', key)
+                self._move_to(self.start_poses[key])
+                time.sleep(_SETTLE_SECONDS)
+                return key
+        return None
 
     def close(self):
         if self.closed:

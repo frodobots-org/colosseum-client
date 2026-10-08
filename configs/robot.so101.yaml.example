@@ -35,6 +35,11 @@ adapter_config:
   # camera_width: 640
   # camera_height: 480
   # camera_fps: 30
+  # Optional: move to a fixed pose before a given model takes over (local inference only).
+  # Keys are the assigned model's runtime_profile, subfolder or URL; values are five joint
+  # angles in degrees then the gripper opening 0-100. Other models start where the arm is.
+  # start_poses:
+  #   g05-so101-v1: [3.1, -34.3, 31.5, 55.9, -12.3, 13.4]   # upstream G05 SO100 home pose
   # On shutdown, move back to the pose measured at start-up before releasing torque.
   return_to_start: true
   # return_step_deg: 1.5

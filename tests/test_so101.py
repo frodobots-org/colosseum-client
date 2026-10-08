@@ -265,3 +265,76 @@ def test_transient_bus_error_during_connection_is_retried_and_released(monkeypat
     with pytest.raises(RuntimeError, match='not calibrated'):
         so101._open_follower('/dev/ttyACM0', 'arm', None, {}, None)
     assert len(created) == 1 and created[0].released == 1
+
+
+G05 = {'url': 'https://huggingface.co/OpenGalaxea/G05', 'subfolder': 'g05-so101', 'runtime_profile': 'g05-so101-v1'}
+HOME = [3.1, -34.3, 31.5, 55.9, -12.3, 13.4]
+
+
+@pytest.mark.parametrize('key', ['g05-so101-v1', 'g05-so101', 'https://huggingface.co/OpenGalaxea/G05'])
+def test_start_pose_for_the_assigned_model_is_reached_in_bounded_steps(hardware, key):
+    robot = make_robot(config(start_poses={key: HOME}, return_step_deg=2))
+    assert robot.prepare_for_model(G05) == key
+    steps = np.asarray(hardware[0].commands)
+    np.testing.assert_allclose(steps[-1], HOME, atol=1e-5)
+    assert np.max(np.abs(np.diff(np.vstack([[1, 2, 3, 4, 5, 40], steps]), axis=0))) <= 2 + 1e-6
+    before = len(steps)
+    robot.close()   # shutdown still returns to the pose measured at start-up
+    np.testing.assert_allclose(hardware[0].commands[-1], [1, 2, 3, 4, 5, 40], atol=1e-5)
+    assert len(hardware[0].commands) > before and hardware[0].disconnected == 1
+
+
+def test_models_without_a_start_pose_do_not_move(hardware):
+    robot = make_robot(config(start_poses={'g05-so101-v1': HOME}))
+    assert robot.prepare_for_model({'url': 'https://huggingface.co/x/y', 'subfolder': '', 'runtime_profile': 'pi05-so101-v1'}) is None
+    assert make_robot(config()).prepare_for_model(G05) is None
+    assert all(not follower.commands for follower in hardware)
+
+
+@pytest.mark.parametrize('poses,match', [
+    ({'g05': [0, 0, 0]}, 'start_poses'),
+    ({'g05': [0, 0, 0, 0, 0, float('nan')]}, 'start_poses'),
+    ({'g05': [0, -150, 0, 0, 0, 10]}, 'outside the joint limits'),
+    ({'g05': [0, 0, 0, 0, 0, 120]}, 'outside the joint limits'),
+    ({'': HOME}, 'start_poses must map'),
+    ([HOME], 'start_poses must map'),
+])
+def test_invalid_start_poses_open_nothing(hardware, poses, match):
+    with pytest.raises(ValueError, match=match):
+        make_robot(config(start_poses=poses))
+    assert hardware == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('execute_action,moved', [(True, True), (False, False)])
+async def test_local_trial_moves_to_the_model_start_pose_only_when_executing(tmp_path, monkeypatch, hardware, execute_action, moved):
+    from types import SimpleNamespace
+    from colosseum_client import evaluation, local_policy
+    from colosseum_client import colosseum_pb2 as pb
+    from colosseum_client.tensors import tensor_from_numpy
+    seen = {}
+
+    class Client:
+        def __init__(self, config, *args, **kwargs):
+            self.model = {'action_space': 'joint_position', 'action_dim': 6, **G05}
+        async def connect(self, **kwargs):
+            return SimpleNamespace(action_spaces=['joint_position'])
+        async def infer(self, obs, **kwargs):
+            seen['first_state'] = np.frombuffer(obs.state['joint_position'].data, np.float32).copy()
+            return pb.ActionPlan(start_step=0, valid_until_step=0, control_hz=30,
+                                 actions=tensor_from_numpy(hardware[0].position.astype(np.float32)[None]))
+        async def before_action(self, step):
+            pass
+        async def finish(self):
+            pass
+        async def close(self):
+            pass
+    monkeypatch.setattr(local_policy, 'LocalPolicyClient', Client)
+    cfg = replace(config(start_poses={'g05-so101-v1': HOME}), recording=False)
+    await evaluation.run_trial(cfg, {'inference_mode': 'local', 'task': {
+        'instruction': 'pick', 'cameras': ['head_image', 'left_image'], 'max_steps': 1}},
+        {'id': 'so101-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=lambda *_: True)
+    # The model's first observation is taken at the home pose only when the arm was allowed to move.
+    np.testing.assert_allclose(seen['first_state'], HOME[:5] if moved else [1, 2, 3, 4, 5], atol=1e-4)
+    assert hardware[0].disconnected == 1
+

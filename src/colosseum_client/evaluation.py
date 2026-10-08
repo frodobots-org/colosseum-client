@@ -220,6 +220,12 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             metadata = await client.connect(evaluation_run=run['id'], institution=config.institution, **options)
             if local_mode:
                 robot = await robot_call(robot_factory, config, action_space=client.model['action_space'])
+                # Optional driver hook: a rig may start some models from their own home pose.
+                prepare = getattr(robot, 'prepare_for_model', None)
+                if prepare is not None and execute_action and not config.test:
+                    start_pose = await robot_call(prepare, client.model)
+                    if start_pose:
+                        print(f'Moved to the start pose configured for {start_pose}.', flush=True)
             if config.test and local_mode:
                 await robot_call(robot.configure_model, client.model)
             if robot.action_space_name not in metadata.action_spaces:
