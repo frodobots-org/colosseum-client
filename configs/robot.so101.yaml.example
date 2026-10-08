@@ -1,0 +1,50 @@
+router_url: wss://YOUR_ROUTER
+# Obtain the Client token and its bound Institution from your Colosseum administrator.
+token: REPLACE_WITH_CLIENT_TOKEN
+institution: YOUR_INSTITUTION
+robot_type: so101
+track: 1
+scene: REPLACE_WITH_SCENE_DESCRIPTION
+evaluator: REPLACE_WITH_EVALUATOR_NAME
+policy_server_url: ws://127.0.0.1:8000
+# Must match the control rate of the models registered for SO101 on the Router.
+control_hz: 30
+# Sent to the model and recorded at this size; cameras capture 640x480 by default.
+image_width: 640
+image_height: 480
+cameras:
+  # A numeric RealSense serial, or a V4L2 index/path. Prefer /dev/v4l/by-id/...
+  # paths for webcams: /dev/videoN indices can change across reboots.
+  head_image: TOP_CAMERA_REALSENSE_SERIAL
+  left_image: /dev/v4l/by-id/YOUR_WRIST_CAMERA-video-index0
+adapter_config:
+  port: /dev/serial/by-id/YOUR_FOLLOWER_ARM
+  # LeRobot calibration id (as used with lerobot-calibrate --robot.id).
+  robot_id: follower_arm
+  # Optional: defaults to LeRobot's calibration directory.
+  # calibration_dir: /absolute/path/to/calibration
+  # REQUIRED five-element arrays in degrees: shoulder_pan, shoulder_lift,
+  # elbow_flex, wrist_flex, wrist_roll. Commands are clamped to this range.
+  joint_low: null
+  joint_high: null
+  # Optional LeRobot per-command limit in degrees from the measured position.
+  # Larger commands are shortened, which adds one bus read per control step.
+  # max_relative_target: 20
+  # Optional: override type detection, e.g. {head_image: opencv}.
+  # camera_types: {}
+  # camera_width: 640
+  # camera_height: 480
+  # camera_fps: 30
+  # Optional: move to a fixed pose before a given model takes over (local inference only).
+  # Keys are the assigned model's runtime_profile, subfolder or URL; values are five joint
+  # angles in degrees then the gripper opening 0-100. Other models start where the arm is.
+  # start_poses:
+  #   g05-so101-v1: [3.1, -34.3, 31.5, 55.9, -12.3, 13.4]   # upstream G05 SO100 home pose
+  # On shutdown, move back to the pose measured at start-up before releasing torque.
+  return_to_start: true
+  # return_step_deg: 1.5
+recording: true
+skip_upload: false
+max_trial_steps: 800
+# test: true bypasses all hardware, including calibration checks.
+test: false

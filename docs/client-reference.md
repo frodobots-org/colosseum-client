@@ -68,7 +68,8 @@ flowchart TD
 ```
 
 Franka uses the existing `DroidRobot` implementation in `robots/franka.py`.
-SO101, YAM and G1 are TODO skeletons and currently stop before opening hardware.
+SO101 uses LeRobot (`robots/so101.py`) and YAM uses I2RT (`robots/yam.py`); G1 is a
+TODO skeleton and currently stops before opening hardware.
 `test: true` bypasses hardware drivers; it does not validate a real robot or
 provide a real model runtime. Policy readiness depends on the selected server.
 `--no-execute-action` still reads the robot and requests inference.
@@ -133,9 +134,9 @@ In remote mode, the Client uses the Router WebSocket at `router_url`.
 
 See [Robot adapter integration](robot-adapters.md) for external Python
 packages (entry points selected by `robot_type`), `adapter_config`, custom camera roles
-and the shared configuration example. SO101, YAM and G1 are provided
-as **unimplemented templates**; they do not control hardware. DROID remains the
-existing hardware implementation. Set only `robot_type: franka`, `so101`, `yam`
+and the shared configuration example. G1 is provided as an **unimplemented
+template**; it does not control hardware. See the [SO101](so101.md) and
+[YAM](yam.md) guides for those drivers. Set only `robot_type: franka`, `so101`, `yam`
 or `g1`; no `adapter` selection field is needed.
 
 The shared contract lives in `robot_interface.py`; new hardware implementations

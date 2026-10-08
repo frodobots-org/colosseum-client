@@ -14,6 +14,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
+# LeRobot's so101_follower feature names, so exports align with training datasets.
+SO101_NAMES = ("shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
+               "wrist_flex.pos", "wrist_roll.pos", "gripper.pos")
+
+
 def _json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
@@ -82,6 +87,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
             raise ValueError("YAM recording requires 12 joints, 2 grippers and 14-D actions")
         vectors["observation.state"] = [row['joints'][:6] + row['gripper'][:1]
                                         + row['joints'][6:] + row['gripper'][1:] for row in rows]
+    if robot_type == "so101" and any(
+            len(row['joints']) != 5 or len(row['gripper']) != 1 or len(row['action']) != 6 for row in rows):
+        raise ValueError("SO101 recording requires 5 joints, 1 gripper and 6-D actions")
     vectors = {key: np.asarray(values, dtype=np.float32) for key, values in vectors.items()}
     capture = np.asarray([row["seconds"] for row in rows], dtype=np.float64)
     if not np.isfinite(capture).all() or np.any(capture < 0) or np.any(np.diff(capture) <= 0):
@@ -95,6 +103,10 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     if robot_type == "yam":
         context["state_action_order"] = "left_joint_1..6,left_gripper,right_joint_1..6,right_gripper"
         context["state_action_units"] = "radians; grippers normalized 0 closed, 1 open"
+        context["cartesian_state_available"] = bool(cartesian[0].size)
+    if robot_type == "so101":
+        context["state_action_order"] = ",".join(SO101_NAMES)
+        context["state_action_units"] = "degrees; gripper opening 0 closed, 100 open"
         context["cartesian_state_available"] = bool(cartesian[0].size)
     signature = hashlib.sha256(raw + json.dumps(context, sort_keys=True).encode()).hexdigest()
     destination = path / "lerobot"
@@ -121,6 +133,8 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
             if robot_type == "yam" and key in {"observation.state", "action"}:
                 names = [name for side in ('left', 'right')
                          for name in [*[f'{side}_joint_{i}' for i in range(1, 7)], f'{side}_gripper']]
+            if robot_type == "so101" and key in {"observation.state", "action"}:
+                names = list(SO101_NAMES)
             features[key] = {"dtype": "float32", "shape": [array.shape[1]], "names": names}
             columns[key] = pa.array(array.tolist(), type=pa.list_(pa.float32(), array.shape[1]))
             stats[key] = _stats(array)

@@ -45,7 +45,7 @@ action retains its numeric record only; its image is not included in the dataset
 | Robot | `robot_type` | Status |
 | --- | --- | --- |
 | [Franka](src/colosseum_client/robots/franka.py) | `franka` | Implemented |
-| [SO-ARM101](src/colosseum_client/robots/so101.py) | `so101` | TODO |
+| [SO-ARM101](src/colosseum_client/robots/so101.py) | `so101` | [LeRobot driver and setup](docs/so101.md) |
 | [Bimanual YAM](src/colosseum_client/robots/yam.py) | `yam` | [I2RT driver and setup](docs/yam.md); hardware validation pending |
 | [Unitree G1](src/colosseum_client/robots/g1.py) | `g1` | TODO |
 

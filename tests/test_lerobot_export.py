@@ -129,3 +129,21 @@ def test_yam_export_preserves_bimanual_order_without_fabricating_fk(tmp_path):
     assert info['features']['action']['names'][6] == 'left_gripper'
     assert info['features']['action']['names'][13] == 'right_gripper'
     assert json.loads((output / 'meta/colosseum.json').read_text())['cartesian_state_available'] is False
+
+
+def test_so101_export_uses_lerobot_motor_names_without_fabricating_fk(tmp_path):
+    recorder = TrialRecorder(tmp_path, ['head_image', 'left_image'])
+    obs = RobotObservation({c: np.zeros((24, 32, 3), np.uint8) for c in recorder.cameras},
+                           np.arange(5, dtype=np.float32), np.array([40.]), np.empty(0))
+    recorder.add(obs, np.arange(6) + .5)
+    recorder.close()
+    output = export_trial(tmp_path, recorder.cameras, fps=30, robot_type='so101', task='pick', metadata={})
+    info = json.loads((output / 'meta/info.json').read_text())
+    table = pq.read_table(output / 'data/chunk-000/file-000.parquet').to_pydict()
+    assert table['observation.state'][0] == [0, 1, 2, 3, 4, 40]
+    assert table['action'][0] == [.5, 1.5, 2.5, 3.5, 4.5, 5.5]
+    assert 'observation.cartesian_position' not in info['features']
+    names = ['shoulder_pan.pos', 'shoulder_lift.pos', 'elbow_flex.pos',
+             'wrist_flex.pos', 'wrist_roll.pos', 'gripper.pos']
+    assert info['features']['observation.state']['names'] == names == info['features']['action']['names']
+    assert 'degrees' in json.loads((output / 'meta/colosseum.json').read_text())['state_action_units']

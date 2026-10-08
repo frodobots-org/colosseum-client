@@ -192,15 +192,17 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
         robot = None
         local_mode = assignment.get('inference_mode', 'remote') == 'local'
         if local_mode:
-            if not config.test and config.robot_type not in {'franka', 'yam'}:
-                raise ValueError('Local Policy evaluation currently supports robot_type: franka or yam')
+            if not config.test and config.robot_type not in {'franka', 'yam', 'so101'}:
+                raise ValueError('Local Policy evaluation currently supports robot_type: franka, yam or so101')
             from .local_policy import LocalPolicyClient
+            joint_count, action_spaces = {
+                'yam': (12, {'joint_position': 14}),
+                'so101': (5, {'joint_position': 6}),
+            }.get(config.robot_type, (7, {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}))
             client = LocalPolicyClient(
                 config, api_url(config), robot_type=config.robot_type,
-                joint_count=12 if config.robot_type == 'yam' else 7,
-                has_gripper=True, control_hz=config.control_hz,
-                action_spaces=({'joint_position': 14} if config.robot_type == 'yam' else
-                               {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}),
+                joint_count=joint_count, has_gripper=True, control_hz=config.control_hz,
+                action_spaces=action_spaces,
             )
         else:
             robot = await robot_call(robot_factory, config)
@@ -218,6 +220,12 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             metadata = await client.connect(evaluation_run=run['id'], institution=config.institution, **options)
             if local_mode:
                 robot = await robot_call(robot_factory, config, action_space=client.model['action_space'])
+                # Optional driver hook: a rig may start some models from their own home pose.
+                prepare = getattr(robot, 'prepare_for_model', None)
+                if prepare is not None and execute_action and not config.test:
+                    start_pose = await robot_call(prepare, client.model)
+                    if start_pose:
+                        print(f'Moved to the start pose configured for {start_pose}.', flush=True)
             if config.test and local_mode:
                 await robot_call(robot.configure_model, client.model)
             if robot.action_space_name not in metadata.action_spaces:
@@ -428,6 +436,9 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                             )
                             if config.robot_type == 'yam':
                                 print('YAM initialization enables position control; shutdown releases motor torque.')
+                            elif config.robot_type == 'so101':
+                                print('SO101 initialization enables motor torque; shutdown returns to the '
+                                      'start pose, then releases torque.')
                             else:
                                 print('RobotEnv initialization may reset the robot before any model action.')
                             return yes_no('Confirm this physical trial may initialize the robot and start')
