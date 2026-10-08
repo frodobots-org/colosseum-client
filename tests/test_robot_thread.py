@@ -62,7 +62,7 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
         assert output.count('Received action chunk')==2
         assert '[robot-io]' not in output
         assert 'elapsed_ms=' not in output
-        assert '[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]' in output
+        assert '[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]' not in output
         assert len(inferences)==2
         assert sum(name=='read' for name,_ in events)==(6 if recording else 5)
         assert len(recordings)==(6 if recording else 0)

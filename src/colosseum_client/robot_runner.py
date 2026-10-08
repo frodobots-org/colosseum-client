@@ -108,7 +108,7 @@ async def run_robot(
             )
             plan = await client.infer(request, deadline_ms=config.deadline_ms)
             actions = action_chunk(plan, control_step=control_step)
-            print(f'Received action chunk at step {control_step} (execution {"enabled" if execute_action else "skipped"}):\n{actions.tolist()}', flush=True)
+            print(f'Received action chunk at step {control_step}: {len(actions)} actions (execution {"enabled" if execute_action else "skipped"}).', flush=True)
 
             for action in actions:
                 if max_control_steps is not None and control_step >= max_control_steps:

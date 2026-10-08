@@ -19,6 +19,11 @@ adapter_config:
   # Passed to I2RT to avoid automatic gripper calibration during startup.
   left_gripper_limits: null
   right_gripper_limits: null
+  # Optional SDK motor_offset[6] recorded together with each calibration (rad).
+  # When supplied, rebase these limits into the SDK's current startup frame.
+  # Leave null for legacy limits already expressed in the current SDK frame.
+  left_gripper_calibration_offset: null
+  right_gripper_calibration_offset: null
   # REQUIRED 12-element arrays, left six then right six, in radians.
   # Limits must include zero: normal executed trials return both arms to joint zero.
   joint_low: null

@@ -1,4 +1,6 @@
 from dataclasses import replace
+import json
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -85,6 +87,48 @@ def config():
                             joint_low=[-3]*12, joint_high=[3]*12, joint_max_step=[.1]*12))
 
 
+@pytest.mark.parametrize('position,normalized,running,valid', [
+    (.1951247425, 1.185, True, False),
+    (1.2, (1.2 - 6.49) / (1.18 - 6.49), True, True),
+    (1.17, (1.17 - 6.49) / (1.18 - 6.49), True, True),
+    (1.2, 1.0, False, False),
+    (1.2, 2.0, True, False),
+    (float('nan'), 1.0, True, False),
+])
+def test_sdk_startup_checks_gripper_before_position_hold(
+        monkeypatch, capsys, position, normalized, running, valid):
+    events = []
+    current = np.r_[np.zeros(6), normalized]
+    chain = SimpleNamespace(
+        read_states=lambda: [SimpleNamespace(id=7, pos=position)],
+        motor_offset=np.r_[np.zeros(6), -2*np.pi],
+        motor_direction=np.ones(7), running=running)
+    def command(value):
+        events.append('hold')
+        assert 0 <= value[6] <= 1
+        np.testing.assert_array_equal(value[:6], current[:6])
+    arm = SimpleNamespace(motor_chain=chain, get_joint_pos=lambda: current.copy(),
+                          command_joint_pos=command, close=lambda: events.append('close'))
+    def factory(**kwargs):
+        assert kwargs['zero_gravity_mode'] is True
+        np.testing.assert_array_equal(kwargs['gripper_limits_override'], [6.49, 1.18])
+        events.append('gravity_start')
+        return arm
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.get_robot', SimpleNamespace(get_yam_robot=factory))
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.utils',
+                        SimpleNamespace(GripperType=SimpleNamespace(LINEAR_4310='linear_4310')))
+    if valid:
+        assert yam._open_arm('can_left', [6.49, 1.18]) is arm
+        assert events == ['gravity_start', 'hold']
+        entry = json.loads(capsys.readouterr().out)
+        assert entry['motor_offset_rad'] == pytest.approx(-2*np.pi)
+        assert entry['measured_position_rad'] == position
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            yam._open_arm('can_left', [6.49, 1.18])
+        assert events == ['gravity_start', 'close']
+
+
 @pytest.fixture
 def hardware(monkeypatch):
     opened = []
@@ -115,6 +159,109 @@ def hardware(monkeypatch):
     return opened
 
 
+@pytest.mark.parametrize('runtime_offset', [0., -2*np.pi, 2*np.pi])
+@pytest.mark.parametrize('direction', [1., -1.])
+@pytest.mark.parametrize('reference_error', [0., 100.])
+def test_calibration_offset_preserves_physical_endpoints(
+        monkeypatch, capsys, runtime_offset, direction, reference_error):
+    raw_limits = np.array([.20695048447394493, -5.102807660028995])
+    calibration_offset = -2*np.pi
+    calibrated = (raw_limits - calibration_offset) * direction
+    original = calibrated.copy()
+    raw_position = .0211718929
+    measured = (raw_position - runtime_offset) * direction
+    states = [SimpleNamespace(id=i+1, pos=.01*i) for i in range(6)]
+    states.append(SimpleNamespace(id=7, pos=measured))
+    class Mapper:
+        def __init__(self, index_range_map, total_dofs):
+            assert total_dofs == 7
+            self.limits = np.array(index_range_map[6], copy=True)
+        def to_command_joint_pos_space(self, values):
+            value = np.array(values, copy=True)
+            value[6] = (value[6]-self.limits[0])/(self.limits[1]-self.limits[0])
+            return value
+        def to_robot_joint_pos_space(self, values):
+            value = np.array(values, copy=True)
+            value[6] = self.limits[0]+value[6]*(self.limits[1]-self.limits[0])
+            return value
+    class Chain:
+        running = True
+        motor_offset = np.r_[np.zeros(6), runtime_offset]
+        motor_direction = np.r_[np.ones(6), direction]
+        def __len__(self): return 7
+        def read_states(self): return states
+    class Arm:
+        motor_chain = Chain()
+        _gripper_index = 6
+        _command_lock = threading.Lock()
+        _state_lock = threading.Lock()
+        _gripper_limits = calibrated.copy()
+        remapper = Mapper({6: calibrated}, 7)
+        _commands = SimpleNamespace(**{name: np.zeros(7) for name in ('kp', 'kd', 'torques', 'pos')})
+        _gripper_force_limiter = SimpleNamespace(_gripper_adjusted_qpos=None, _is_clogged=False)
+        closed = False
+        def _motor_state_to_joint_state(self, values):
+            return SimpleNamespace(pos=self.remapper.to_command_joint_pos_space([s.pos for s in values]))
+        def get_joint_pos(self): return self._joint_state.pos.copy()
+        def command_joint_pos(self, values):
+            self.target = self.remapper.to_robot_joint_pos_space(values)
+            self._commands.kp[6] = 8  # Hold starts only after the rebase/check.
+        def close(self): self.closed = True
+    arm = Arm()
+    arm._joint_state = arm._motor_state_to_joint_state(states)
+    def factory(**kwargs):
+        assert kwargs['zero_gravity_mode'] is True
+        return arm
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.get_robot', SimpleNamespace(get_yam_robot=factory))
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.utils', SimpleNamespace(
+        GripperType=SimpleNamespace(LINEAR_4310='linear_4310'), JointMapper=Mapper))
+    if reference_error:
+        with pytest.raises(RuntimeError, match='startup mismatch'):
+            yam._open_arm('can_left', calibrated,
+                          calibration_offset=calibration_offset + reference_error)
+        assert arm.closed
+        assert not hasattr(arm, 'target')
+        return
+    result = yam._open_arm('can_left', calibrated, calibration_offset=calibration_offset)
+    assert result is arm and not arm.closed
+    np.testing.assert_allclose(arm.target[:6], [s.pos for s in states[:6]])
+    assert arm.target[6]*direction + runtime_offset == pytest.approx(raw_position)
+    np.testing.assert_allclose(arm._gripper_limits*direction + runtime_offset, raw_limits)
+    for opening in (0., .5, 1.):
+        target = arm.remapper.to_robot_joint_pos_space(np.r_[np.zeros(6), opening])[6]
+        assert target*direction + runtime_offset == pytest.approx(
+            raw_limits[0] + opening*(raw_limits[1]-raw_limits[0]))
+    np.testing.assert_array_equal(calibrated, original)
+    entry = json.loads(capsys.readouterr().out)
+    assert entry['calibration_offset_rad'] == calibration_offset
+    assert entry['motor_offset_rad'] == runtime_offset
+    with pytest.raises(RuntimeError, match='control is active'):
+        yam._rebase_gripper_limits(arm, calibrated)
+
+
+@pytest.mark.parametrize('offset', [float('nan'), float('inf'), True, '-6.28'])
+def test_invalid_calibration_offset_opens_nothing(hardware, offset):
+    cfg = config()
+    with pytest.raises(ValueError, match='calibration_offset'):
+        make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+            'left_gripper_calibration_offset': offset}))
+    assert hardware == []
+
+
+def test_calibration_offset_is_routed_to_correct_arm(hardware, monkeypatch):
+    factory = yam._open_arm
+    calls = []
+    def record(channel, limits, **kwargs):
+        calls.append((channel, kwargs))
+        return factory(channel, limits)
+    monkeypatch.setattr(yam, '_open_arm', record)
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={**cfg.adapter_config,
+        'left_gripper_calibration_offset': -2*np.pi}))
+    assert calls == [('can_left', {'calibration_offset': -2*np.pi}), ('can_right', {})]
+    robot.close()
+
+
 def test_state_and_action_order_and_close(hardware):
     robot = make_robot(config())
     obs = robot.get_observation()
@@ -131,6 +278,75 @@ def test_state_and_action_order_and_close(hardware):
     assert all(item.closed == 1 for item in hardware)
     with pytest.raises(RuntimeError, match='closed'):
         robot.get_observation()
+
+
+def _temperature_chain(channel, running=True):
+    state = SimpleNamespace(id=7, temp_mos=61.0, temp_rotor=64.0,
+                            eff=.25, pos=1.2, vel=0.0, error_code='0x1')
+    # ID 7 need not be the last element in a diagnostic snapshot.
+    return SimpleNamespace(channel=channel, running=running,
+                           read_states=lambda: [state, SimpleNamespace(id=1)])
+
+
+def test_gripper_temperatures_read_sdk_cache_and_mark_stopped_chain(hardware, capsys):
+    robot = make_robot(config())
+    for arm in robot.arms:
+        arm.motor_chain = _temperature_chain(arm.channel)
+    robot.arms[0].motor_chain.running = False
+    robot._print_gripper_telemetry()
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r['side'] for r in rows] == ['left', 'right']
+    assert [r['channel'] for r in rows] == ['can_left', 'can_right']
+    assert rows[0]['source'] == 'sdk_feedback_cache'
+    assert rows[0]['chain_running'] is False
+    assert rows[0]['possibly_stale'] is True
+    assert rows[1]['chain_running'] is True
+    assert rows[0]['mos_temperature_c'] == 61
+    assert rows[0]['rotor_temperature_c'] == 64
+    assert rows[0]['effort_nm'] == .25
+    assert all(not arm.commands for arm in robot.arms)
+    robot.close()
+
+
+def test_gripper_telemetry_failure_does_not_hide_other_arm(hardware, capsys, caplog):
+    robot = make_robot(config())
+    robot.arms[0].motor_chain = _temperature_chain('can_left')
+    def failed():
+        raise RuntimeError('feedback unavailable')
+    robot.arms[0].motor_chain.read_states = failed
+    robot.arms[1].motor_chain = _temperature_chain('can_right')
+    robot._print_gripper_telemetry()
+    assert 'left gripper telemetry unavailable' in caplog.text
+    assert json.loads(capsys.readouterr().out)['side'] == 'right'
+    assert not robot.closed
+    robot.close()
+
+
+def test_gripper_monitor_runs_without_actions_and_stops_before_sdk_close(hardware, monkeypatch):
+    robot = make_robot(config())
+    for arm in robot.arms:
+        arm.motor_chain = _temperature_chain(arm.channel)
+    sampled = threading.Event()
+    samples = []
+    def report():
+        samples.append(1)
+        if len(samples) >= 2:
+            sampled.set()
+    monkeypatch.setattr(robot, '_print_gripper_telemetry', report)
+    monkeypatch.setattr(yam, '_GRIPPER_LOG_INTERVAL', .01)
+    original_close = yam._close_arm
+    def close_after_monitor(arm):
+        assert not robot._telemetry_thread.is_alive()
+        original_close(arm)
+    monkeypatch.setattr(yam, '_close_arm', close_after_monitor)
+    robot._start_gripper_telemetry()
+    try:
+        assert sampled.wait(2)  # No observe()/execute() calls are needed.
+        assert all(not arm.commands for arm in robot.arms)
+    finally:
+        robot.close()
+    assert not robot._telemetry_thread.is_alive()
+    assert all(resource.closed == 1 for resource in hardware)
 
 
 @pytest.mark.parametrize('index,value', [(0, 4), (7, .3), (6, 1.1), (13, -.1), (1, float('nan'))])

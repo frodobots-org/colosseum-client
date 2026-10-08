@@ -29,6 +29,63 @@ These are the source revisions inspected for this integration.
 - Cartesian pose is unavailable: the driver returns an empty vector and export
   omits `observation.cartesian_position`. It never fabricates a zero pose.
 
+## Gripper diagnostics
+
+Before enabling position hold, each arm is created in SDK gravity-compensation
+mode (no gripper PD hold). A `yam_gripper_startup` JSON line reports the loaded
+closed/open limits, measured SDK position/normalized opening, motor offset and
+direction. The Client checks the gripper's measured SDK coordinates against the
+calibrated interval with a fixed `0.02 rad` endpoint tolerance. A stopped chain,
+nonfinite feedback, or an out-of-range startup pose aborts initialization and
+closes the opened hardware; support the arms because shutdown releases torque.
+Only after validation does the Client request position hold. This detects startup
+coordinate mismatches; it does not recalibrate, prove the endpoints are physically
+correct, or replace thermal protection. The SDK still initializes/enables motors
+before this check; this is not a hardware power isolation mechanism.
+
+Save `motor_offset[6]` with the gripper calibration. The SDK can choose different
+startup offsets depending on the initial encoder position. Optional adapter keys
+`left_gripper_calibration_offset` and `right_gripper_calibration_offset` are the
+raw motor offsets **at calibration time**, in radians. When present, the Client
+uses `effective_limits = calibrated_limits + (calibration_offset - startup_offset)
+* motor_direction`. This preserves the physical encoder endpoints; it does not
+expand the stroke or infer calibration from the current pose. The SDK direction
+must remain the same as during calibration. SET_ZERO invalidates this reference;
+recalibrate and record a new offset after changing the hardware zero.
+
+For example, a calibration measured with offset `-2*pi` can be retained as:
+
+```yaml
+adapter_config:
+  left_gripper_limits: [6.490135791653531, 1.180377647150591]
+  left_gripper_calibration_offset: -6.283185307179586
+```
+
+At startup offset zero this yields effective limits approximately
+`[0.20695048, -5.10280766]`; at startup offset `-2*pi` the original limits apply.
+Use only your own measured calibration and recorded offset. An omitted/null key
+keeps the legacy interpretation and startup check. The startup JSON reports both
+the calibrated and effective endpoints. Before position hold, the Client updates
+the pinned SDK's mapping, endpoint clipper and normalized feedback under its
+command/state locks. Motor offsets themselves, arm gains, and thermal protections
+are unchanged. A remaining mismatch still aborts initialization.
+
+The Client prints one `yam_gripper_telemetry` JSON line per arm every second
+after initialization, including while policy inference is pending. Fields include
+`side`, CAN `channel`, `motor_id: 7`, `mos_temperature_c`, `rotor_temperature_c`,
+`effort_nm`, `position_rad`, `velocity_rad_s`, and `chain_running`. These are SDK
+feedback-cache readings; no additional CAN requests or motor commands are sent.
+`position_rad` uses the SDK's direction/offset-adjusted coordinates, not normalized
+opening. `time_unix_s` is the logging time, not the CAN frame acquisition time.
+If the chain has stopped, `possibly_stale: true` marks the last cached readings.
+Even a running chain does not guarantee a fresh frame; a fault frame may be
+discarded by I2RT before updating its cache. Negative temperature sentinels such
+as `-1` mean unavailable SDK data. These diagnostics do not change gripper targets,
+calibration, thermal protection, or the return-to-zero behavior.
+
+Capture these lines from the **Client** terminal, not the Policy Server worker
+log. For example, append `2>&1 | tee -a yam-client.log` to the usual Client command.
+
 ## Install and configure the robot host
 
 From the `colosseum-client` checkout:

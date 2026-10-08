@@ -5,6 +5,7 @@ normalized gripper. Observations keep twelve joints and two grippers separate.
 SDK close releases motor torque; it is not a powered position hold.
 """
 import asyncio
+import json
 import logging
 import select
 import sys
@@ -18,6 +19,8 @@ from ..robot_interface import Robot, RobotObservation
 log = logging.getLogger(__name__)
 CAMERAS = ('head_image', 'left_image', 'right_image')
 _CONTROL_JOIN_TIMEOUT = 5.0
+_GRIPPER_LOG_INTERVAL = 1.0
+_GRIPPER_STARTUP_TOLERANCE_RAD = .02
 
 
 def _bounds_error(message):
@@ -75,15 +78,97 @@ def _vector(value, size, name):
     return result.copy()
 
 
-def _open_arm(channel, gripper_limits):
+def _rebase_gripper_limits(arm, limits):
+    """Change only the gripper mapping while startup gripper control is passive.
+
+    I2RT stores the limits in both JointMapper and the final target clipper.
+    Update both and refresh normalized feedback atomically with its robot loop.
+    Motor offsets, directions and arm control parameters remain unchanged.
+    """
+    from i2rt.robots.utils import JointMapper
+    mapper = JointMapper(index_range_map={6: limits}, total_dofs=7)
+    with arm._command_lock, arm._state_lock:
+        if (arm._gripper_index != 6 or len(arm.motor_chain) != 7
+                or any(getattr(arm._commands, name)[6] != 0
+                       for name in ('kp', 'kd', 'torques'))):
+            raise RuntimeError('Cannot rebase gripper calibration while gripper control is active')
+        states = arm.motor_chain.read_states()
+        if len(states) != 7 or states[6].id != 7:
+            raise RuntimeError('Unexpected I2RT motor order during gripper calibration rebase')
+        arm._gripper_limits = limits.copy()
+        arm.remapper = mapper
+        arm._joint_state = arm._motor_state_to_joint_state(states)
+        arm._commands.pos[6] = states[6].pos
+        arm._last_gripper_command_qpos = states[6].pos
+        # Discard any startup limiter target computed using the old mapping.
+        arm._gripper_force_limiter._gripper_adjusted_qpos = None
+        arm._gripper_force_limiter._is_clogged = False
+
+
+def _open_arm(channel, gripper_limits, *, calibration_offset=None):
     try:
         from i2rt.robots.get_robot import get_yam_robot
         from i2rt.robots.utils import GripperType
     except ImportError as exc:
         raise RuntimeError('Install I2RT in the Client environment; see docs/yam.md') from exc
-    return get_yam_robot(channel=channel, gripper_type=GripperType.LINEAR_4310,
-                         gripper_limits_override=gripper_limits,
-                         zero_gravity_mode=False)
+    # Do not let the SDK immediately hold a gripper pose in the wrong calibrated
+    # coordinate range. Gravity-compensation startup leaves gripper PD gains zero.
+    arm = get_yam_robot(channel=channel, gripper_type=GripperType.LINEAR_4310,
+                        gripper_limits_override=gripper_limits,
+                        zero_gravity_mode=True)
+    try:
+        chain = arm.motor_chain
+        calibrated = _vector(gripper_limits, 2, 'gripper_limits')
+        limits = calibrated.copy()
+        offsets = _vector(chain.motor_offset, 7, 'I2RT motor_offset')
+        directions = _vector(chain.motor_direction, 7, 'I2RT motor_direction')
+        if calibration_offset is not None:
+            if directions[6] not in (-1, 1):
+                raise RuntimeError('Gripper motor direction must be +1 or -1')
+            # SDK q = (raw - offset) * direction. Preserve raw physical endpoints.
+            shift = (calibration_offset - offsets[6]) * directions[6]
+            limits += shift
+            if not np.isfinite(limits).all() or limits[0] == limits[1]:
+                raise ValueError('Invalid rebased gripper limits')
+            if shift != 0:
+                _rebase_gripper_limits(arm, limits)
+        state = next(s for s in chain.read_states() if s.id == 7)
+        measured = float(state.pos)  # SDK direction/offset-adjusted radians.
+        current = _vector(arm.get_joint_pos(), 7, 'I2RT startup joint position')
+        print(json.dumps({
+            'event': 'yam_gripper_startup', 'channel': channel, 'motor_id': 7,
+            'calibrated_closed_rad': float(calibrated[0]),
+            'calibrated_open_rad': float(calibrated[1]),
+            'calibration_offset_rad': calibration_offset,
+            'effective_closed_rad': float(limits[0]),
+            'effective_open_rad': float(limits[1]),
+            'measured_position_rad': measured,
+            'measured_normalized': float(current[6]),
+            'motor_offset_rad': float(offsets[6]),
+            'motor_direction': float(directions[6]),
+            'chain_running': bool(chain.running),
+        }, allow_nan=False), flush=True)
+        low, high = min(limits), max(limits)
+        # Check both cached representations before granting position control.
+        mapped = limits[0] + current[6] * (limits[1] - limits[0])
+        if not chain.running or any(
+            not np.isfinite(p) or p < low - _GRIPPER_STARTUP_TOLERANCE_RAD
+            or p > high + _GRIPPER_STARTUP_TOLERANCE_RAD for p in (measured, mapped)
+        ):
+            raise RuntimeError(
+                f'YAM {channel} gripper startup mismatch; position hold NOT enabled: '
+                f'measured={measured:.9g}, calibrated=[{limits[0]:.9g}, {limits[1]:.9g}], '
+                f'motor_offset={offsets[6]:.9g}, normalized={current[6]:.9g}. '
+                'Check calibration and startup coordinates; do not widen limits to bypass this check.')
+        current[6] = np.clip(current[6], 0, 1)
+        arm.command_joint_pos(current)
+        return arm
+    except BaseException:
+        try:
+            _close_arm(arm)
+        except Exception:
+            log.exception('YAM startup validation cleanup failed on %s', channel)
+        raise
 
 
 class _RealSenseCamera:
@@ -125,6 +210,7 @@ class YAMRobot(Robot):
         settings = dict(config.adapter_config)
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
+                   'left_gripper_calibration_offset', 'right_gripper_calibration_offset',
                    'joint_max_step', 'joint_step_mode', 'zero_position_tolerance', 'camera_timeout_ms'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
@@ -150,6 +236,14 @@ class YAMRobot(Robot):
                   for side in ('left', 'right')]
         if any(v[0] == v[1] for v in limits):
             raise ValueError('Gripper limits must be distinct calibrated [closed, open] positions')
+        calibration_offsets = []
+        for side in ('left', 'right'):
+            name = f'{side}_gripper_calibration_offset'
+            value = settings.get(name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not np.isfinite(value)):
+                raise ValueError(f'{name} must be finite radians or null')
+            calibration_offsets.append(None if value is None else float(value))
         if set(config.cameras) != set(CAMERAS) or len(set(config.cameras.values())) != 3:
             raise ValueError('YAM requires three distinct cameras: head_image, left_image, right_image')
         if config.control_hz != 30:
@@ -158,20 +252,69 @@ class YAMRobot(Robot):
         if type(timeout) is not int or not 1 <= timeout <= 10000:
             raise ValueError('camera_timeout_ms must be an integer in [1, 10000]')
         self.arms, self.cameras, self.closed = [], {}, False
+        self._telemetry_stop = threading.Event()
+        self._telemetry_thread = None
         try:
             # Check cameras before enabling either arm. No automatic homing.
             for name in CAMERAS:
                 self.cameras[name] = _RealSenseCamera(config.cameras[name], timeout)
                 self.cameras[name].read()
-            for channel, calibration in zip(channels, limits):
-                self.arms.append(_open_arm(channel, calibration))
+            for channel, calibration, offset in zip(channels, limits, calibration_offsets):
+                if offset is None:
+                    self.arms.append(_open_arm(channel, calibration))
+                else:
+                    self.arms.append(_open_arm(channel, calibration, calibration_offset=offset))
             self._read_positions()
+            self._start_gripper_telemetry()
         except BaseException:
             try:
                 self.close()
             except Exception:
                 log.exception('YAM initialization cleanup failed')
             raise
+
+    def _print_gripper_telemetry(self):
+        """Read SDK feedback caches only; never send commands or query the CAN bus.
+
+        On a motor fault I2RT may discard the failing frame before updating its
+        cache. These are last cached readings, not the fault frame's temperature.
+        """
+        for side, arm in zip(('left', 'right'), self.arms):
+            chain = getattr(arm, 'motor_chain', None)
+            if not callable(getattr(chain, 'read_states', None)):
+                continue
+            try:
+                state = next(s for s in chain.read_states() if s.id == 7)
+                running = bool(chain.running)
+                print(json.dumps({
+                    'event': 'yam_gripper_telemetry', 'time_unix_s': time.time(),
+                    'side': side, 'channel': chain.channel, 'motor_id': 7,
+                    'source': 'sdk_feedback_cache', 'chain_running': running,
+                    'possibly_stale': not running,
+                    'mos_temperature_c': float(state.temp_mos),
+                    'rotor_temperature_c': float(state.temp_rotor),
+                    'effort_nm': float(state.eff),
+                    'position_rad': float(state.pos), 'velocity_rad_s': float(state.vel),
+                    'cached_error_code': str(state.error_code),
+                }, allow_nan=False), flush=True)
+            except Exception:
+                # Diagnostics must not interrupt arm control or hide its errors.
+                log.warning('YAM %s gripper telemetry unavailable', side, exc_info=True)
+
+    def _start_gripper_telemetry(self):
+        if not any(callable(getattr(getattr(arm, 'motor_chain', None), 'read_states', None))
+                   for arm in self.arms):
+            return
+
+        def monitor():
+            while not self._telemetry_stop.is_set():
+                self._print_gripper_telemetry()
+                if self._telemetry_stop.wait(_GRIPPER_LOG_INTERVAL):
+                    break
+
+        self._telemetry_thread = threading.Thread(target=monitor, name='yam-gripper-telemetry',
+                                                   daemon=True)
+        self._telemetry_thread.start()
 
     def _read_positions(self):
         if self.closed:
@@ -378,6 +521,11 @@ class YAMRobot(Robot):
             return
         self.closed = True
         errors = []
+        self._telemetry_stop.set()
+        if self._telemetry_thread is not None:
+            self._telemetry_thread.join(timeout=_CONTROL_JOIN_TIMEOUT)
+            if self._telemetry_thread.is_alive():
+                errors.append(RuntimeError('YAM gripper telemetry thread did not stop'))
         for resource in [*self.arms, *self.cameras.values()]:
             try:
                 if any(resource is arm for arm in self.arms):
