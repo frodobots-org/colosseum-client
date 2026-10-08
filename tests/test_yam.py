@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 import threading
 from types import SimpleNamespace
 
@@ -131,6 +132,75 @@ def test_state_and_action_order_and_close(hardware):
     assert all(item.closed == 1 for item in hardware)
     with pytest.raises(RuntimeError, match='closed'):
         robot.get_observation()
+
+
+def _temperature_chain(channel, running=True):
+    state = SimpleNamespace(id=7, temp_mos=61.0, temp_rotor=64.0,
+                            eff=.25, pos=1.2, vel=0.0, error_code='0x1')
+    # ID 7 need not be the last element in a diagnostic snapshot.
+    return SimpleNamespace(channel=channel, running=running,
+                           read_states=lambda: [state, SimpleNamespace(id=1)])
+
+
+def test_gripper_temperatures_read_sdk_cache_and_mark_stopped_chain(hardware, capsys):
+    robot = make_robot(config())
+    for arm in robot.arms:
+        arm.motor_chain = _temperature_chain(arm.channel)
+    robot.arms[0].motor_chain.running = False
+    robot._print_gripper_telemetry()
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r['side'] for r in rows] == ['left', 'right']
+    assert [r['channel'] for r in rows] == ['can_left', 'can_right']
+    assert rows[0]['source'] == 'sdk_feedback_cache'
+    assert rows[0]['chain_running'] is False
+    assert rows[0]['possibly_stale'] is True
+    assert rows[1]['chain_running'] is True
+    assert rows[0]['mos_temperature_c'] == 61
+    assert rows[0]['rotor_temperature_c'] == 64
+    assert rows[0]['effort_nm'] == .25
+    assert all(not arm.commands for arm in robot.arms)
+    robot.close()
+
+
+def test_gripper_telemetry_failure_does_not_hide_other_arm(hardware, capsys, caplog):
+    robot = make_robot(config())
+    robot.arms[0].motor_chain = _temperature_chain('can_left')
+    def failed():
+        raise RuntimeError('feedback unavailable')
+    robot.arms[0].motor_chain.read_states = failed
+    robot.arms[1].motor_chain = _temperature_chain('can_right')
+    robot._print_gripper_telemetry()
+    assert 'left gripper telemetry unavailable' in caplog.text
+    assert json.loads(capsys.readouterr().out)['side'] == 'right'
+    assert not robot.closed
+    robot.close()
+
+
+def test_gripper_monitor_runs_without_actions_and_stops_before_sdk_close(hardware, monkeypatch):
+    robot = make_robot(config())
+    for arm in robot.arms:
+        arm.motor_chain = _temperature_chain(arm.channel)
+    sampled = threading.Event()
+    samples = []
+    def report():
+        samples.append(1)
+        if len(samples) >= 2:
+            sampled.set()
+    monkeypatch.setattr(robot, '_print_gripper_telemetry', report)
+    monkeypatch.setattr(yam, '_GRIPPER_LOG_INTERVAL', .01)
+    original_close = yam._close_arm
+    def close_after_monitor(arm):
+        assert not robot._telemetry_thread.is_alive()
+        original_close(arm)
+    monkeypatch.setattr(yam, '_close_arm', close_after_monitor)
+    robot._start_gripper_telemetry()
+    try:
+        assert sampled.wait(2)  # No observe()/execute() calls are needed.
+        assert all(not arm.commands for arm in robot.arms)
+    finally:
+        robot.close()
+    assert not robot._telemetry_thread.is_alive()
+    assert all(resource.closed == 1 for resource in hardware)
 
 
 @pytest.mark.parametrize('index,value', [(0, 4), (7, .3), (6, 1.1), (13, -.1), (1, float('nan'))])

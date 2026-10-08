@@ -29,6 +29,24 @@ These are the source revisions inspected for this integration.
 - Cartesian pose is unavailable: the driver returns an empty vector and export
   omits `observation.cartesian_position`. It never fabricates a zero pose.
 
+## Gripper diagnostics
+
+The Client prints one `yam_gripper_telemetry` JSON line per arm every second
+after initialization, including while policy inference is pending. Fields include
+`side`, CAN `channel`, `motor_id: 7`, `mos_temperature_c`, `rotor_temperature_c`,
+`effort_nm`, `position_rad`, `velocity_rad_s`, and `chain_running`. These are SDK
+feedback-cache readings; no additional CAN requests or motor commands are sent.
+`position_rad` uses the SDK's direction/offset-adjusted coordinates, not normalized
+opening. `time_unix_s` is the logging time, not the CAN frame acquisition time.
+If the chain has stopped, `possibly_stale: true` marks the last cached readings.
+Even a running chain does not guarantee a fresh frame; a fault frame may be
+discarded by I2RT before updating its cache. Negative temperature sentinels such
+as `-1` mean unavailable SDK data. These diagnostics do not change gripper targets,
+calibration, thermal protection, or the return-to-zero behavior.
+
+Capture these lines from the **Client** terminal, not the Policy Server worker
+log. For example, append `2>&1 | tee -a yam-client.log` to the usual Client command.
+
 ## Install and configure the robot host
 
 From the `colosseum-client` checkout:

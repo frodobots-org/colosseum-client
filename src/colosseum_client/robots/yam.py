@@ -5,6 +5,7 @@ normalized gripper. Observations keep twelve joints and two grippers separate.
 SDK close releases motor torque; it is not a powered position hold.
 """
 import asyncio
+import json
 import logging
 import select
 import sys
@@ -18,6 +19,7 @@ from ..robot_interface import Robot, RobotObservation
 log = logging.getLogger(__name__)
 CAMERAS = ('head_image', 'left_image', 'right_image')
 _CONTROL_JOIN_TIMEOUT = 5.0
+_GRIPPER_LOG_INTERVAL = 1.0
 
 
 def _bounds_error(message):
@@ -158,6 +160,8 @@ class YAMRobot(Robot):
         if type(timeout) is not int or not 1 <= timeout <= 10000:
             raise ValueError('camera_timeout_ms must be an integer in [1, 10000]')
         self.arms, self.cameras, self.closed = [], {}, False
+        self._telemetry_stop = threading.Event()
+        self._telemetry_thread = None
         try:
             # Check cameras before enabling either arm. No automatic homing.
             for name in CAMERAS:
@@ -166,12 +170,56 @@ class YAMRobot(Robot):
             for channel, calibration in zip(channels, limits):
                 self.arms.append(_open_arm(channel, calibration))
             self._read_positions()
+            self._start_gripper_telemetry()
         except BaseException:
             try:
                 self.close()
             except Exception:
                 log.exception('YAM initialization cleanup failed')
             raise
+
+    def _print_gripper_telemetry(self):
+        """Read SDK feedback caches only; never send commands or query the CAN bus.
+
+        On a motor fault I2RT may discard the failing frame before updating its
+        cache. These are last cached readings, not the fault frame's temperature.
+        """
+        for side, arm in zip(('left', 'right'), self.arms):
+            chain = getattr(arm, 'motor_chain', None)
+            if not callable(getattr(chain, 'read_states', None)):
+                continue
+            try:
+                state = next(s for s in chain.read_states() if s.id == 7)
+                running = bool(chain.running)
+                print(json.dumps({
+                    'event': 'yam_gripper_telemetry', 'time_unix_s': time.time(),
+                    'side': side, 'channel': chain.channel, 'motor_id': 7,
+                    'source': 'sdk_feedback_cache', 'chain_running': running,
+                    'possibly_stale': not running,
+                    'mos_temperature_c': float(state.temp_mos),
+                    'rotor_temperature_c': float(state.temp_rotor),
+                    'effort_nm': float(state.eff),
+                    'position_rad': float(state.pos), 'velocity_rad_s': float(state.vel),
+                    'cached_error_code': str(state.error_code),
+                }, allow_nan=False), flush=True)
+            except Exception:
+                # Diagnostics must not interrupt arm control or hide its errors.
+                log.warning('YAM %s gripper telemetry unavailable', side, exc_info=True)
+
+    def _start_gripper_telemetry(self):
+        if not any(callable(getattr(getattr(arm, 'motor_chain', None), 'read_states', None))
+                   for arm in self.arms):
+            return
+
+        def monitor():
+            while not self._telemetry_stop.is_set():
+                self._print_gripper_telemetry()
+                if self._telemetry_stop.wait(_GRIPPER_LOG_INTERVAL):
+                    break
+
+        self._telemetry_thread = threading.Thread(target=monitor, name='yam-gripper-telemetry',
+                                                   daemon=True)
+        self._telemetry_thread.start()
 
     def _read_positions(self):
         if self.closed:
@@ -378,6 +426,11 @@ class YAMRobot(Robot):
             return
         self.closed = True
         errors = []
+        self._telemetry_stop.set()
+        if self._telemetry_thread is not None:
+            self._telemetry_thread.join(timeout=_CONTROL_JOIN_TIMEOUT)
+            if self._telemetry_thread.is_alive():
+                errors.append(RuntimeError('YAM gripper telemetry thread did not stop'))
         for resource in [*self.arms, *self.cameras.values()]:
             try:
                 if any(resource is arm for arm in self.arms):
