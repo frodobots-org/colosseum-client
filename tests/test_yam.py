@@ -1,5 +1,6 @@
 from dataclasses import replace
 import json
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -84,6 +85,48 @@ def config():
         adapter_config=dict(left_channel='can_left', right_channel='can_right',
                             left_gripper_limits=[0, 1], right_gripper_limits=[0, 1],
                             joint_low=[-3]*12, joint_high=[3]*12, joint_max_step=[.1]*12))
+
+
+@pytest.mark.parametrize('position,normalized,running,valid', [
+    (.1951247425, 1.185, True, False),
+    (1.2, (1.2 - 6.49) / (1.18 - 6.49), True, True),
+    (1.17, (1.17 - 6.49) / (1.18 - 6.49), True, True),
+    (1.2, 1.0, False, False),
+    (1.2, 2.0, True, False),
+    (float('nan'), 1.0, True, False),
+])
+def test_sdk_startup_checks_gripper_before_position_hold(
+        monkeypatch, capsys, position, normalized, running, valid):
+    events = []
+    current = np.r_[np.zeros(6), normalized]
+    chain = SimpleNamespace(
+        read_states=lambda: [SimpleNamespace(id=7, pos=position)],
+        motor_offset=np.r_[np.zeros(6), -2*np.pi],
+        motor_direction=np.ones(7), running=running)
+    def command(value):
+        events.append('hold')
+        assert 0 <= value[6] <= 1
+        np.testing.assert_array_equal(value[:6], current[:6])
+    arm = SimpleNamespace(motor_chain=chain, get_joint_pos=lambda: current.copy(),
+                          command_joint_pos=command, close=lambda: events.append('close'))
+    def factory(**kwargs):
+        assert kwargs['zero_gravity_mode'] is True
+        np.testing.assert_array_equal(kwargs['gripper_limits_override'], [6.49, 1.18])
+        events.append('gravity_start')
+        return arm
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.get_robot', SimpleNamespace(get_yam_robot=factory))
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.utils',
+                        SimpleNamespace(GripperType=SimpleNamespace(LINEAR_4310='linear_4310')))
+    if valid:
+        assert yam._open_arm('can_left', [6.49, 1.18]) is arm
+        assert events == ['gravity_start', 'hold']
+        entry = json.loads(capsys.readouterr().out)
+        assert entry['motor_offset_rad'] == pytest.approx(-2*np.pi)
+        assert entry['measured_position_rad'] == position
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            yam._open_arm('can_left', [6.49, 1.18])
+        assert events == ['gravity_start', 'close']
 
 
 @pytest.fixture

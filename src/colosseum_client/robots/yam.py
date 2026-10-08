@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 CAMERAS = ('head_image', 'left_image', 'right_image')
 _CONTROL_JOIN_TIMEOUT = 5.0
 _GRIPPER_LOG_INTERVAL = 1.0
+_GRIPPER_STARTUP_TOLERANCE_RAD = .02
 
 
 def _bounds_error(message):
@@ -83,9 +84,50 @@ def _open_arm(channel, gripper_limits):
         from i2rt.robots.utils import GripperType
     except ImportError as exc:
         raise RuntimeError('Install I2RT in the Client environment; see docs/yam.md') from exc
-    return get_yam_robot(channel=channel, gripper_type=GripperType.LINEAR_4310,
-                         gripper_limits_override=gripper_limits,
-                         zero_gravity_mode=False)
+    # Do not let the SDK immediately hold a gripper pose in the wrong calibrated
+    # coordinate range. Gravity-compensation startup leaves gripper PD gains zero.
+    arm = get_yam_robot(channel=channel, gripper_type=GripperType.LINEAR_4310,
+                        gripper_limits_override=gripper_limits,
+                        zero_gravity_mode=True)
+    try:
+        chain = arm.motor_chain
+        state = next(s for s in chain.read_states() if s.id == 7)
+        measured = float(state.pos)  # SDK direction/offset-adjusted radians.
+        current = _vector(arm.get_joint_pos(), 7, 'I2RT startup joint position')
+        limits = _vector(gripper_limits, 2, 'gripper_limits')
+        offsets = _vector(chain.motor_offset, 7, 'I2RT motor_offset')
+        directions = _vector(chain.motor_direction, 7, 'I2RT motor_direction')
+        print(json.dumps({
+            'event': 'yam_gripper_startup', 'channel': channel, 'motor_id': 7,
+            'calibrated_closed_rad': float(limits[0]),
+            'calibrated_open_rad': float(limits[1]),
+            'measured_position_rad': measured,
+            'measured_normalized': float(current[6]),
+            'motor_offset_rad': float(offsets[6]),
+            'motor_direction': float(directions[6]),
+            'chain_running': bool(chain.running),
+        }, allow_nan=False), flush=True)
+        low, high = min(limits), max(limits)
+        # Check both cached representations before granting position control.
+        mapped = limits[0] + current[6] * (limits[1] - limits[0])
+        if not chain.running or any(
+            not np.isfinite(p) or p < low - _GRIPPER_STARTUP_TOLERANCE_RAD
+            or p > high + _GRIPPER_STARTUP_TOLERANCE_RAD for p in (measured, mapped)
+        ):
+            raise RuntimeError(
+                f'YAM {channel} gripper startup mismatch; position hold NOT enabled: '
+                f'measured={measured:.9g}, calibrated=[{limits[0]:.9g}, {limits[1]:.9g}], '
+                f'motor_offset={offsets[6]:.9g}, normalized={current[6]:.9g}. '
+                'Check calibration and startup coordinates; do not widen limits to bypass this check.')
+        current[6] = np.clip(current[6], 0, 1)
+        arm.command_joint_pos(current)
+        return arm
+    except BaseException:
+        try:
+            _close_arm(arm)
+        except Exception:
+            log.exception('YAM startup validation cleanup failed on %s', channel)
+        raise
 
 
 class _RealSenseCamera:

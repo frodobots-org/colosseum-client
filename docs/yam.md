@@ -31,6 +31,18 @@ These are the source revisions inspected for this integration.
 
 ## Gripper diagnostics
 
+Before enabling position hold, each arm is created in SDK gravity-compensation
+mode (no gripper PD hold). A `yam_gripper_startup` JSON line reports the loaded
+closed/open limits, measured SDK position/normalized opening, motor offset and
+direction. The Client checks the gripper's measured SDK coordinates against the
+calibrated interval with a fixed `0.02 rad` endpoint tolerance. A stopped chain,
+nonfinite feedback, or an out-of-range startup pose aborts initialization and
+closes the opened hardware; support the arms because shutdown releases torque.
+Only after validation does the Client request position hold. This detects startup
+coordinate mismatches; it does not recalibrate, prove the endpoints are physically
+correct, or replace thermal protection. The SDK still initializes/enables motors
+before this check; this is not a hardware power isolation mechanism.
+
 The Client prints one `yam_gripper_telemetry` JSON line per arm every second
 after initialization, including while policy inference is pending. Fields include
 `side`, CAN `channel`, `motor_id: 7`, `mos_temperature_c`, `rotor_temperature_c`,
