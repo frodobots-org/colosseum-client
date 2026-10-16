@@ -1,0 +1,17 @@
+# API origin; do not append /api.
+api_url: http://127.0.0.1:8765
+router_url: ws://127.0.0.1:8765
+token: env:COLOSSEUM_CLIENT_TOKEN
+institution: Frodobots
+runner_id: mini-operator-01
+bot_slug: SET_THE_INTENDED_BOT_SLUG
+sdk_url: http://127.0.0.1:8000
+max_linear: 0.15
+max_angular: 0.25
+# Set true only after recording physical stop/network-loss qualification.
+qualified: false
+evaluation_dir: eval_runs/earth-rover
+# Set these absolute paths for native evidence after ending the operator ride.
+# native_exporter: /path/to/frodobots-datasets/colosseum/export_run.py
+# native_python: /path/to/python-with-boto3
+# source_bucket: frodobots-agora-v1

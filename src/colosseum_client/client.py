@@ -35,7 +35,7 @@ class ColosseumClient:
         self.router_url = router_url
         self.token = token
         self.client_id = client_id
-        if joint_count <= 0 or control_hz <= 0:
+        if (joint_count <= 0 and not (robot_type == 'earth_rover_mini_plus' and joint_count == 0 and not has_gripper)) or control_hz <= 0:
             raise ValueError("joint_count and control_hz must be positive")
         if action_spaces is None:
             action_spaces = {"joint_position": joint_count + int(has_gripper)}

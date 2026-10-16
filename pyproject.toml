@@ -31,6 +31,7 @@ dev = ["grpcio-tools>=1.66", "pytest>=8", "pytest-asyncio>=0.24"]
 colosseum-client-demo = "colosseum_client.cli:main"
 colosseum-robot = "colosseum_client.robot_cli:main"
 colosseum-upload-dataset = "colosseum_client.dataset_upload:main"
+colosseum-rover = "colosseum_client.rover_runner:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
