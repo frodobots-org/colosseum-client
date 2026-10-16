@@ -51,6 +51,8 @@ action retains its numeric record only; its image is not included in the dataset
 
 [Adding a new robot](docs/robot-adapters.md)
 
+[YAM local evaluations with VLAs and EE LLMs: record, review and submit](docs/local-evals.md)
+
 ## Reference
 
 [Evaluation flow & API reference](docs/client-reference.md)

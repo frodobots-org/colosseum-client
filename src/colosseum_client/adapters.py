@@ -1,4 +1,5 @@
 """Robot-specific implementations sit behind this evaluation interface."""
+from dataclasses import replace
 from importlib import import_module
 from importlib.metadata import entry_points
 import numpy as np
@@ -40,6 +41,12 @@ def load_adapter_factory(name: str):
 def make_robot(config: RobotClientConfig, *, action_space: str = "joint_position") -> Robot:
     if config.test or config.robot_type == 'test':
         return TestRobot(config)
+    if config.robot_type == 'yam' and action_space == 'eef_abs_pose':
+        from .robots.yam_eef import YAMEEFRobot
+        return YAMEEFRobot(config)
+    if config.robot_type == 'yam' and 'inspect_eef' in config.adapter_config:
+        config = replace(config, adapter_config={key: value for key, value in config.adapter_config.items()
+                                                 if key != 'inspect_eef'})
     if config.robot_type == 'franka':
         return DroidRobot(config.cameras, action_space=action_space,
                           image_size=(config.image_width, config.image_height))
@@ -61,6 +68,7 @@ class TestRobot(Robot):
         self.width, self.height = config.image_width, config.image_height
         self.joints = np.zeros(7, dtype=np.float32)
         self.gripper = np.zeros(1, dtype=np.float32)
+        self.eef_state = np.zeros(14, dtype=np.float32)
         self.step = 0
 
     def configure_model(self, model):
@@ -68,9 +76,9 @@ class TestRobot(Robot):
         self.action_dim = model['action_dim']
         self.action_space_name = model['action_space']
         self.joint_count = 7
-        if self.robot_type == 'yam' and self.action_space_name == 'joint_position':
+        if self.robot_type == 'yam' and self.action_space_name in {'joint_position', 'eef_abs_pose'}:
             if self.action_dim != 14:
-                raise ValueError('Synthetic YAM requires 14-D joint_position')
+                raise ValueError('Synthetic YAM requires 14-D actions')
             self.joint_count = 12
             self.gripper = np.zeros(2, dtype=np.float32)
         if self.robot_type == 'so101' and self.action_space_name == 'joint_position':
@@ -87,7 +95,8 @@ class TestRobot(Robot):
             image[:] = [32,128,224]
             image[:,self.step % self.width,:] = 255
             images[camera] = image
-        return RobotObservation(images, self.joints.copy(), self.gripper.copy(), np.zeros(6,dtype=np.float32))
+        cartesian = self.eef_state.copy() if self.action_space_name == 'eef_abs_pose' else np.zeros(6,dtype=np.float32)
+        return RobotObservation(images, self.joints.copy(), self.gripper.copy(), cartesian)
 
     def execute(self, action):
         import numpy as np
@@ -97,6 +106,11 @@ class TestRobot(Robot):
         if self.robot_type == 'yam' and self.action_dim == 14 and self.action_space_name == 'joint_position':
             self.joints = np.r_[value[:6], value[7:13]]
             self.gripper = value[[6, 13]].copy()
+        elif self.robot_type == 'yam' and self.action_space_name == 'eef_abs_pose':
+            self.eef_state = value.copy()
+            self.gripper = value[[6, 13]].copy()
+            self.step += 1
+            return np.r_[self.joints[:6], self.gripper[:1], self.joints[6:], self.gripper[1:]]
         else:
             if self.action_space_name.startswith('joint'):
                 self.joints = value[:-1].copy()

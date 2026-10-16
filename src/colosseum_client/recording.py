@@ -34,7 +34,7 @@ class TrialRecorder:
         if self._error is not None:
             raise RuntimeError('Recording failed; trial video is incomplete') from self._error
 
-    def add(self, observation, action=None, *, captured_at=None):
+    def add(self, observation, action=None, *, captured_at=None, policy_action=None):
         """Copy buffers and enqueue without waiting for compression or disk I/O."""
         if self._closed:
             raise RuntimeError('Recorder is closed')
@@ -50,6 +50,8 @@ class TrialRecorder:
                   'gripper': np.asarray(observation.gripper).tolist(),
                   'cartesian_position': np.asarray(observation.cartesian_position).tolist(),
                   'action': None if action is None else np.asarray(action).tolist()}
+        if policy_action is not None:
+            record['policy_action'] = np.asarray(policy_action).tolist()
         try:
             self._queue.put_nowait((images, record))
         except queue.Full as exc:

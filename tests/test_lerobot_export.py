@@ -131,6 +131,24 @@ def test_yam_export_preserves_bimanual_order_without_fabricating_fk(tmp_path):
     assert json.loads((output / 'meta/colosseum.json').read_text())['cartesian_state_available'] is False
 
 
+def test_yam_eef_export_keeps_raw_target_and_sent_joint_command(tmp_path):
+    recorder = TrialRecorder(tmp_path, ['head_image', 'left_image', 'right_image'])
+    obs = RobotObservation({c: np.zeros((24, 32, 3), np.uint8) for c in recorder.cameras},
+                           np.zeros(12, np.float32), np.ones(2, np.float32),
+                           np.arange(14, dtype=np.float32) / 10)
+    sent = np.arange(14, dtype=np.float32) / 100
+    target = np.arange(14, dtype=np.float32) / 20
+    recorder.add(obs, sent, policy_action=target)
+    recorder.close()
+    output = export_trial(tmp_path, recorder.cameras, fps=30, robot_type='yam', task='pick', metadata={})
+    info = json.loads((output / 'meta/info.json').read_text())
+    table = pq.read_table(output / 'data/chunk-000/file-000.parquet').to_pydict()
+    np.testing.assert_allclose(table['action'][0], sent)
+    np.testing.assert_allclose(table['action.eef_target'][0], target)
+    np.testing.assert_allclose(table['observation.cartesian_position'][0], obs.cartesian_position)
+    assert info['features']['action.eef_target']['names'][7] == 'right_x'
+
+
 def test_so101_export_uses_lerobot_motor_names_without_fabricating_fk(tmp_path):
     recorder = TrialRecorder(tmp_path, ['head_image', 'left_image'])
     obs = RobotObservation({c: np.zeros((24, 32, 3), np.uint8) for c in recorder.cameras},

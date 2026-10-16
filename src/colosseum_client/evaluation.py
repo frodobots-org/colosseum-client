@@ -62,7 +62,7 @@ class EvalAPI:
     def request(self, method, path, body=None):
         if method.upper() == 'POST' and path == '/next' and getattr(self.config, 'llm_api_urls', []):
             body = {**body, 'llm_api_urls': self.config.llm_api_urls,
-                    'llm_providers': list(self.config.llm_api_keys)}
+                    'llm_providers': self.config.llm_providers}
         response = self.client.request(method, '/api/eval' + path, json=body,
             timeout=1800 if path.endswith('/dataset/complete') else 30)
         if response.status_code == 409:
@@ -196,7 +196,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 raise ValueError('Local Policy evaluation currently supports robot_type: franka, yam or so101')
             from .local_policy import LocalPolicyClient
             joint_count, action_spaces = {
-                'yam': (12, {'joint_position': 14}),
+                'yam': (12, {'joint_position': 14, 'eef_abs_pose': 14}),
                 'so101': (5, {'joint_position': 6}),
             }.get(config.robot_type, (7, {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}))
             client = LocalPolicyClient(
@@ -220,6 +220,11 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             metadata = await client.connect(evaluation_run=run['id'], institution=config.institution, **options)
             if local_mode:
                 robot = await robot_call(robot_factory, config, action_space=client.model['action_space'])
+                prepare_trial = getattr(robot, 'prepare_for_trial', None)
+                if prepare_trial is not None:
+                    if not execute_action:
+                        raise ValueError('YAM EE evaluation requires action execution')
+                    await robot_call(prepare_trial, task['instruction'], run['id'])
                 # Optional driver hook: a rig may start some models from their own home pose.
                 prepare = getattr(robot, 'prepare_for_model', None)
                 if prepare is not None and execute_action and not config.test:
@@ -233,12 +238,13 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             if local_mode:
                 save(path / 'policy.json', {'run_id': run['id'], 'model': client.model})
             if config.recording:
+                eef_control = robot.action_space_name == 'eef_abs_pose'
                 save(path / 'recording-context.json', {
                     'robot_type': config.robot_type, 'fps': config.control_hz,
-                    'action_space': robot.action_space_name,
+                    'action_space': 'joint_position' if eef_control else robot.action_space_name,
                     'execution_enabled': execute_action, 'test': config.test,
                     'joint_step_mode': getattr(robot, 'joint_step_mode', None),
-                    'action_recording': 'policy_targets',
+                    'action_recording': 'post_ik_sent_joint_commands' if eef_control else 'policy_targets',
                     'joint_max_step': config.adapter_config.get('joint_max_step')})
                 record_cameras = trial_cameras(config, task)
                 print(f"Recording cameras: {record_cameras} (Router task cameras: {task['cameras']})", flush=True)
@@ -264,11 +270,16 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                     chunk_index = 0
                     print(f'Received action chunk at step {step}: {len(actions)} actions (execution {"enabled" if execute_action else "skipped"}).', flush=True)
                 action = actions[chunk_index]
-                if recorder is not None:
-                    recorder.add(current, action, captured_at=captured_at)
                 if local_mode:
                     await client.before_action(step)
-                await execute_robot_action_async(robot, action, step, robot_call, execute_action)
+                sent = await execute_robot_action_async(robot, action, step, robot_call, execute_action)
+                if recorder is not None:
+                    if robot.action_space_name == 'eef_abs_pose':
+                        if sent is None:
+                            raise RuntimeError('YAM EE step returned no sent joint command')
+                        recorder.add(current, sent, captured_at=captured_at, policy_action=action)
+                    else:
+                        recorder.add(current, action, captured_at=captured_at)
                 chunk_index += 1
                 step += 1
                 # Include observation, inference and execution in the control period.

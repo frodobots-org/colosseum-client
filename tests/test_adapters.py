@@ -25,6 +25,17 @@ def test_dummy_mode_does_not_load_hardware(name):
     assert robot.get_observation().images['wrist'].shape == (288, 512, 3)
 
 
+def test_yam_joint_assignment_ignores_ee_only_settings(monkeypatch):
+    seen = []
+    monkeypatch.setattr(adapters, 'load_adapter_factory',
+                        lambda name: lambda cfg: seen.append(cfg.adapter_config) or object())
+    make_robot(config(robot_type='yam', adapter_config={
+        'joint_low': [0] * 12,
+        'inspect_eef': {'eef_low': [0] * 14, 'eef_high': [1] * 14},
+    }), action_space='joint_position')
+    assert seen == [{'joint_low': [0] * 12}]
+
+
 @pytest.fixture
 def external_adapter(tmp_path, monkeypatch):
     (tmp_path / 'partner_robot.py').write_text('''

@@ -82,6 +82,14 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     }
     if cartesian[0].size:
         vectors["observation.cartesian_position"] = cartesian
+    policy_actions = [row.get('policy_action') for row in rows]
+    if any(value is not None for value in policy_actions):
+        if any(value is None for value in policy_actions):
+            raise ValueError('Incomplete EE policy action recording')
+        targets = np.asarray(policy_actions, dtype=np.float32)
+        if targets.shape != (len(rows), 14) or not np.isfinite(targets).all():
+            raise ValueError('YAM EE policy actions must be finite 14-D targets')
+        vectors['action.eef_target'] = targets
     if robot_type == "yam":
         if any(len(row['joints']) != 12 or len(row['gripper']) != 2 or len(row['action']) != 14 for row in rows):
             raise ValueError("YAM recording requires 12 joints, 2 grippers and 14-D actions")
@@ -133,6 +141,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
             if robot_type == "yam" and key in {"observation.state", "action"}:
                 names = [name for side in ('left', 'right')
                          for name in [*[f'{side}_joint_{i}' for i in range(1, 7)], f'{side}_gripper']]
+            if robot_type == 'yam' and key == 'action.eef_target':
+                names = [f'{side}_{axis}' for side in ('left', 'right')
+                         for axis in ('x', 'y', 'z', 'yaw', 'pitch', 'roll', 'gripper')]
             if robot_type == "so101" and key in {"observation.state", "action"}:
                 names = list(SO101_NAMES)
             features[key] = {"dtype": "float32", "shape": [array.shape[1]], "names": names}

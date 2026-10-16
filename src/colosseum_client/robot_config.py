@@ -14,6 +14,7 @@ class RobotClientConfig:
     token: str
     cameras: Mapping[str, str]
     llm_api_keys: Mapping[str, str] = field(default_factory=dict, repr=False)
+    llm_account_logins: Mapping[str, str] = field(default_factory=dict)
     institution: str = ""
     scene: str = ""
     evaluator: str = ""
@@ -42,14 +43,24 @@ class RobotClientConfig:
     image_height: int = 288
 
     @property
+    def llm_providers(self):
+        return list(dict.fromkeys([*self.llm_api_keys, *self.llm_account_logins]))
+
+    @property
     def llm_api_urls(self):
         from .llm_credentials import API_URLS
-        return [API_URLS[name] for name in self.llm_api_keys]
+        return [API_URLS[name] for name in self.llm_providers]
 
     def __post_init__(self) -> None:
         from .llm_credentials import resolve_keys, require_secure_policy_url
         keys = resolve_keys(self.llm_api_keys)
-        if keys:
+        if (not isinstance(self.llm_account_logins, Mapping)
+                or dict(self.llm_account_logins) != {'anthropic': 'claude-code'}
+                and self.llm_account_logins):
+            raise ValueError('llm_account_logins supports only anthropic: claude-code')
+        if set(keys) & set(self.llm_account_logins):
+            raise ValueError('Choose an API key or account login for each LLM provider')
+        if keys or self.llm_account_logins:
             require_secure_policy_url(self.policy_server_url)
         object.__setattr__(self, 'llm_api_keys', keys)
         for name in ('policy_ping_interval', 'policy_ping_timeout'):
@@ -100,7 +111,7 @@ class RobotClientConfig:
             "institution", "test", "use_local_action_contract", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
             "robot_type", "adapter", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
             "url", "dataset_url", "dataset_token", "dataset_token_file",
-            "token", "llm_api_keys",
+            "token", "llm_api_keys", "llm_account_logins",
             "cameras",
             "instruction",
             "control_hz",
@@ -140,6 +151,7 @@ class RobotClientConfig:
             url=value["url"],
             token=value["token"],
             llm_api_keys=value.get("llm_api_keys", {}),
+            llm_account_logins=value.get("llm_account_logins", {}),
             cameras={name: str(camera_id) for name, camera_id in cameras.items()} or ({'head_image':'dummy'} if value.get('test', False) else {}),
             scene=value.get("scene", ""),
             institution=value.get("institution", ""),

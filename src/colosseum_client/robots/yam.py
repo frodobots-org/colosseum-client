@@ -127,6 +127,20 @@ def _open_arm(channel, gripper_limits, *, calibration_offset=None):
                 raise RuntimeError('Gripper motor direction must be +1 or -1')
             # SDK q = (raw - offset) * direction. Preserve raw physical endpoints.
             shift = (calibration_offset - offsets[6]) * directions[6]
+            # The motor's raw frame can itself come up one full turn away after
+            # a power cycle, so the recorded offset alone is ambiguous by 2*pi.
+            # Gripper travel is under one turn: at most one whole-turn shift can
+            # contain the measured position. Anything else still fails below.
+            position = float(next(s for s in chain.read_states() if s.id == 7).pos)
+            span = [min(calibrated) - _GRIPPER_STARTUP_TOLERANCE_RAD,
+                    max(calibrated) + _GRIPPER_STARTUP_TOLERANCE_RAD]
+            if span[1] - span[0] < 2 * np.pi and not span[0] <= position - shift <= span[1]:
+                turns = [k for k in (-2, -1, 1, 2)
+                         if span[0] <= position - shift - 2 * np.pi * k <= span[1]]
+                if len(turns) == 1:
+                    log.warning('YAM %s gripper calibration shifted by %+d turn(s) to match startup position',
+                                channel, turns[0])
+                    shift += 2 * np.pi * turns[0]
             limits += shift
             if not np.isfinite(limits).all() or limits[0] == limits[1]:
                 raise ValueError('Invalid rebased gripper limits')
@@ -211,7 +225,8 @@ class YAMRobot(Robot):
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
                    'left_gripper_calibration_offset', 'right_gripper_calibration_offset',
-                   'joint_max_step', 'joint_step_mode', 'zero_position_tolerance', 'camera_timeout_ms'}
+                   'joint_max_step', 'joint_step_mode', 'joint_limit_mode', 'joint_limit_margin', 'gripper_max_step',
+                   'zero_position_tolerance', 'camera_timeout_ms'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
         self.low = _vector(settings.get('joint_low'), 12, 'joint_low')
@@ -223,8 +238,28 @@ class YAMRobot(Robot):
                 or not np.isfinite(tolerance) or not 0 < tolerance <= .1):
             raise ValueError('zero_position_tolerance must be in (0, 0.1] radians')
         self.zero_position_tolerance = float(tolerance)
-        if self.joint_step_mode not in ('reject', 'clip', 'interpolate'):
-            raise ValueError('joint_step_mode must be reject, clip or interpolate')
+        if self.joint_step_mode not in ('reject', 'clip', 'clip_commanded', 'interpolate'):
+            raise ValueError('joint_step_mode must be reject, clip, clip_commanded or interpolate')
+        # clip: saturate policy targets at joint_low/high and gripper [0, 1]
+        # instead of failing the trial. Measured positions stay strictly checked.
+        self.joint_limit_mode = settings.get('joint_limit_mode', 'reject')
+        if self.joint_limit_mode not in ('reject', 'clip'):
+            raise ValueError('joint_limit_mode must be reject or clip')
+        # Clip mode keeps policy targets this far inside joint_low/high, so tracking
+        # overshoot or sag does not push the measured pose past the hard limit.
+        margin = settings.get('joint_limit_margin', 0)
+        if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+                or not np.isfinite(margin) or not 0 <= margin <= .2
+                or np.any(self.high - self.low <= 2 * margin)):
+            raise ValueError('joint_limit_margin must be in [0, 0.2] radians and narrower than each joint range')
+        self.joint_limit_margin = float(margin)
+        gripper_step = settings.get('gripper_max_step', .15)
+        if (isinstance(gripper_step, bool) or not isinstance(gripper_step, (int, float))
+                or not np.isfinite(gripper_step) or not 0 < gripper_step <= 1):
+            raise ValueError('gripper_max_step must be in (0, 1]')
+        self.gripper_max_step = float(gripper_step)
+        # clip_commanded: last sent 14-D target; None until the first command.
+        self._last_command = None
         if np.any(self.low >= self.high) or np.any(self.max_step <= 0):
             raise ValueError('YAM requires joint_low < joint_high and positive joint_max_step')
         if np.any(self.low > 0) or np.any(self.high < 0):
@@ -347,9 +382,20 @@ class YAMRobot(Robot):
                                 np.array([left[6], right[6]], dtype=np.float32),
                                 np.empty(0, dtype=np.float32))  # FK is unavailable, not zero.
 
-    def _validated_action(self, action):
+    def _validated_action(self, action, *, policy=False):
         value = _vector(action, 14, 'YAM action')
         joints = np.r_[value[:6], value[7:13]]
+        if policy and self.joint_limit_mode == 'clip':
+            low, high = self.low + self.joint_limit_margin, self.high - self.joint_limit_margin
+            details = _joint_bounds_details(joints, low, high)
+            grippers = [f'{side}_gripper: target={value[i]:.6f}'
+                        for side, i in (('left', 6), ('right', 13)) if not 0 <= value[i] <= 1]
+            if details or grippers:
+                log.warning('YAM policy targets clipped to limits: %s', '; '.join(filter(None, [details, *grippers])))
+                joints = np.clip(joints, low, high)
+                value = value.copy()
+                value[:6], value[7:13] = joints[:6], joints[6:]
+                value[[6, 13]] = np.clip(value[[6, 13]], 0, 1)
         if np.any(joints < self.low) or np.any(joints > self.high):
             _bounds_error('YAM action exceeds joint limits: ' + _joint_bounds_details(joints, self.low, self.high))
         if np.any(value[[6, 13]] < 0) or np.any(value[[6, 13]] > 1):
@@ -364,7 +410,7 @@ class YAMRobot(Robot):
         Read actual feedback once at the start, then interpolate commands. This
         bounds command increments, not tracking error or physical joint speed.
         """
-        target = self._validated_action(action)
+        target = self._validated_action(action, policy=True)
         left, right = self._read_positions()
         start = self._validated_action(np.r_[left, right])
         limits = np.r_[self.max_step[:6], .01, self.max_step[6:], .01]
@@ -394,7 +440,9 @@ class YAMRobot(Robot):
             await asyncio.sleep(max(0, 1 / 30 - (time.monotonic() - started)))
 
     def _execute_single(self, action):
-        value = self._validated_action(action)
+        if self.joint_step_mode == 'clip_commanded':
+            return self._execute_clip_commanded(action)
+        value = self._validated_action(action, policy=True)
         joints = np.r_[value[:6], value[7:13]]
         left, right = self._read_positions()
         measured = np.r_[left[:6], right[:6]]
@@ -417,6 +465,28 @@ class YAMRobot(Robot):
             value[:6], value[7:13] = limited[:6], limited[6:]
             log.warning('YAM joint targets clipped (radians): %s', details)
         self._send_action(value)
+
+    def _execute_clip_commanded(self, action):
+        """Clamp against the previously commanded target, as LeRobot's
+        eval_yam_joint_policy does; the first command is bounded by measured
+        feedback. Joints use joint_max_step, grippers gripper_max_step."""
+        value = self._validated_action(action, policy=True)
+        if self._last_command is None:
+            left, right = self._read_positions()
+            self._last_command = self._validated_action(np.r_[left, right])
+        previous = self._last_command
+        limits = np.r_[self.max_step[:6], self.gripper_max_step, self.max_step[6:], self.gripper_max_step]
+        delta = value - previous
+        exceeded = np.flatnonzero(np.abs(delta) > limits)
+        if exceeded.size:
+            names = [f'left_joint{i + 1}' for i in range(6)] + ['left_gripper']
+            names += [f'right_joint{i + 1}' for i in range(6)] + ['right_gripper']
+            log.warning('YAM targets clipped against previous command: %s', '; '.join(
+                f'{names[i]}: previous={previous[i]:.6f}, target={value[i]:.6f}, '
+                f'delta={delta[i]:.6f}, limit={limits[i]:.6f}' for i in exceeded))
+            value = previous + np.clip(delta, -limits, limits)
+        self._send_action(value)
+        self._last_command = value
 
     def _send_action(self, action):
         if self.closed:
@@ -442,8 +512,16 @@ class YAMRobot(Robot):
         """
         print('YAM return: moving arm joints to zero; grippers unchanged.', flush=True)
         left, right = await robot_call(self._read_positions)
-        self._validated_action(np.r_[left, right])
-        target = np.r_[left[:6], right[:6]]
+        start = np.r_[left[:6], right[:6]]
+        # Sag/overshoot can leave a joint marginally past its limit; homing moves it back
+        # inside, so start the ramp from the clamped pose. Larger excursions still fail.
+        clamped = np.clip(start, self.low, self.high)
+        if np.any(np.abs(start - clamped) > .05):
+            self._validated_action(np.r_[left, right])
+        if np.any(start != clamped):
+            log.warning('YAM return: start pose slightly outside joint limits, clamped: %s',
+                        _joint_bounds_details(start, self.low, self.high))
+        target = clamped
         measured = target.copy()
         grippers = np.array([left[6], right[6]])
         # Fixed command ramp, independent of feedback lag (as in interpolation).

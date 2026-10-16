@@ -6,3 +6,5 @@ dist/
 *.egg-info/
 configs/*.yaml
 eval_runs/
+eval_review_cache/
+local/

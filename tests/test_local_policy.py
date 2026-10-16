@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 from colosseum_client.local_policy import LocalPolicyClient
 from colosseum_client.robot_config import RobotClientConfig
@@ -132,6 +133,70 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, p
         for task in [c.receiver_task,c.reporting_task,c.heartbeat_task]:
             task.cancel()
         await asyncio.gather(c.receiver_task,c.reporting_task,c.heartbeat_task,return_exceptions=True)
+
+
+async def test_eef_effective_contract_keeps_router_joint_identity(monkeypatch):
+    from colosseum_client.local_protocol import encode_control, decode_control
+    from colosseum_client import local_policy
+
+    cfg = RobotClientConfig(url='ws://router', token='token', cameras={},
+        robot_type='yam', policy_server_url='ws://127.0.0.1:8000',
+        control_hz=30, use_local_action_contract=True,
+        llm_api_keys={'openai': 'secret'})
+    c = LocalPolicyClient(cfg, 'http://router', robot_type='yam', joint_count=12,
+        has_gripper=True, control_hz=30,
+        action_spaces={'joint_position': 14, 'eef_abs_pose': 14})
+    model = dict(model_type='llm', name='gpt-6-astra', url='https://relay.example/v1',
+        revision='router-revision', action_space='joint_position', action_dim=14,
+        control_hz=30, max_horizon=1)
+    preparation = dict(type='prepare', protocol_version=1, run_id='run-1',
+        preparation_id='prep', model=model, task={'instruction': 'Pick up the block'},
+        test=False)
+    effective = {**model, 'action_space': 'eef_abs_pose'}
+    stop = asyncio.Event()
+
+    class Router:
+        async def recv(self):
+            if not hasattr(self, 'sent_prepare'):
+                self.sent_prepare = True
+                return encode_control(preparation)
+            await stop.wait()
+
+        async def send(self, value):
+            ready = decode_control(value)
+            assert all(ready['model'][key] == value for key, value in model.items())
+            assert 'message' not in ready
+
+    class Policy:
+        async def recv(self):
+            if not hasattr(self, 'ready_sent'):
+                self.ready_sent = True
+                return encode_control({**preparation, 'type': 'ready', 'loaded': True,
+                    'message': json.dumps({'effective_model': effective})})
+            await stop.wait()
+
+        async def send(self, value):
+            actual = decode_control(value)
+            assert all(actual['model'][key] == value for key, value in model.items())
+            assert json.loads(actual['message'])['client_options']['use_local_action_contract'] is True
+            assert actual['api_key'] == 'secret'
+
+    connections = iter([Router(), Policy()])
+
+    async def connect(*args, **kwargs):
+        return next(connections)
+
+    monkeypatch.setattr(local_policy, 'connect', connect)
+    try:
+        metadata = await c.connect(evaluation_run='run-1')
+        assert c.model['action_space'] == 'eef_abs_pose'
+        assert list(metadata.action_spaces) == ['eef_abs_pose']
+    finally:
+        tasks = [task for task in (c.receiver_task, c.reporting_task, c.heartbeat_task) if task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks,
+                             return_exceptions=True)
 
 
 async def test_background_router_rejection_stops_further_actions():

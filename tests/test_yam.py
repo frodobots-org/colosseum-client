@@ -239,6 +239,62 @@ def test_calibration_offset_preserves_physical_endpoints(
         yam._rebase_gripper_limits(arm, calibrated)
 
 
+@pytest.mark.parametrize('runtime_offset,measured,ok', [
+    (0., 1.23, True), (-2*np.pi, 1.23, True),   # raw frame came up a turn away: same SDK position
+    (2*np.pi, .26, True),                        # started closed: SDK wrapped the position itself
+    (0., .7, False), (0., -5.6, False)])  # in the gap: no whole-turn shift fits
+def test_calibration_resolves_whole_turn_ambiguity(monkeypatch, runtime_offset, measured, ok):
+    calibrated = np.array([6.543923843839387, 1.2253917617458452])
+    class Mapper:
+        def __init__(self, index_range_map, total_dofs):
+            self.limits = np.array(index_range_map[6], copy=True)
+        def to_command_joint_pos_space(self, values):
+            value = np.array(values, copy=True)
+            value[6] = (value[6]-self.limits[0])/(self.limits[1]-self.limits[0])
+            return value
+        def to_robot_joint_pos_space(self, values):
+            value = np.array(values, copy=True)
+            value[6] = self.limits[0]+value[6]*(self.limits[1]-self.limits[0])
+            return value
+    states = [SimpleNamespace(id=i+1, pos=0.) for i in range(6)] + [SimpleNamespace(id=7, pos=measured)]
+    class Chain:
+        running = True
+        motor_offset = np.r_[np.zeros(6), runtime_offset]
+        motor_direction = np.ones(7)
+        def __len__(self): return 7
+        def read_states(self): return states
+    class Arm:
+        motor_chain = Chain()
+        _gripper_index = 6
+        _command_lock = threading.Lock()
+        _state_lock = threading.Lock()
+        _gripper_limits = calibrated.copy()
+        remapper = Mapper({6: calibrated}, 7)
+        _commands = SimpleNamespace(**{name: np.zeros(7) for name in ('kp', 'kd', 'torques', 'pos')})
+        _gripper_force_limiter = SimpleNamespace(_gripper_adjusted_qpos=None, _is_clogged=False)
+        closed = False
+        def _motor_state_to_joint_state(self, values):
+            return SimpleNamespace(pos=self.remapper.to_command_joint_pos_space([s.pos for s in values]))
+        def get_joint_pos(self): return self._joint_state.pos.copy()
+        def command_joint_pos(self, values): self.target = self.remapper.to_robot_joint_pos_space(values)
+        def close(self): self.closed = True
+    arm = Arm()
+    arm._joint_state = arm._motor_state_to_joint_state(states)
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.get_robot', SimpleNamespace(get_yam_robot=lambda **k: arm))
+    monkeypatch.setitem(sys.modules, 'i2rt.robots.utils', SimpleNamespace(
+        GripperType=SimpleNamespace(LINEAR_4310='linear_4310'), JointMapper=Mapper))
+    if not ok:
+        with pytest.raises(RuntimeError, match='startup mismatch'):
+            yam._open_arm('can_left', calibrated, calibration_offset=-2*np.pi)
+        assert arm.closed and not hasattr(arm, 'target')
+        return
+    yam._open_arm('can_left', calibrated, calibration_offset=-2*np.pi)
+    assert arm.target[6] == pytest.approx(measured, abs=.03)  # holds where it is
+    width = abs(arm._gripper_limits[1] - arm._gripper_limits[0])
+    assert width == pytest.approx(abs(calibrated[1] - calibrated[0]))
+    assert min(arm._gripper_limits) - .03 <= measured <= max(arm._gripper_limits) + .03
+
+
 @pytest.mark.parametrize('offset', [float('nan'), float('inf'), True, '-6.28'])
 def test_invalid_calibration_offset_opens_nothing(hardware, offset):
     cfg = config()
@@ -416,6 +472,26 @@ def test_clip_rejects_measured_position_outside_absolute_limits(hardware):
     robot.close()
 
 
+def test_clip_commanded_bounds_against_previous_command(hardware):
+    cfg = config()
+    robot = make_robot(replace(cfg, adapter_config={
+        **cfg.adapter_config, 'joint_step_mode': 'clip_commanded',
+        'joint_max_step': [.1]*12, 'gripper_max_step': .2}))
+    start = np.r_[robot.arms[0].position, robot.arms[1].position].astype(float)
+    target = start.copy()
+    target[0] += .25
+    target[6] = max(0., start[6] - .5)
+    robot.execute(target)
+    first = robot.arms[0].commands[-1]
+    assert first[0] == pytest.approx(start[0] + .1)
+    assert first[6] == pytest.approx(start[6] - min(.2, start[6] - target[6]))
+    # Arm has not moved: the next step is bounded by the previous command, not feedback.
+    robot.execute(target)
+    second = robot.arms[0].commands[-1]
+    assert second[0] == pytest.approx(start[0] + .2)
+    robot.close()
+
+
 def test_invalid_step_mode_opens_no_hardware(hardware):
     cfg = config()
     with pytest.raises(ValueError, match='joint_step_mode'):
@@ -574,6 +650,29 @@ def test_joint_observation_and_action_bounds_are_logged(hardware, caplog):
     robot.close()
 
 
+@pytest.mark.parametrize('step_mode', ['reject', 'clip', 'clip_commanded', 'interpolate'])
+def test_joint_limit_mode_clip_saturates_policy_targets(hardware, caplog, step_mode):
+    cfg = config()
+    cfg.adapter_config.update(joint_limit_mode='clip', joint_step_mode=step_mode)
+    robot = make_robot(cfg)
+    robot.arms[1].position[[3, 6]] = 2.95, .95
+    action = np.r_[robot.arms[0].position, robot.arms[1].position]
+    action[[10, 13]] = 3.05, 1.02
+    robot.execute(action)
+    sent = robot.arms[1].commands[-1]
+    assert sent[3] == pytest.approx(3.0) and sent[6] == pytest.approx(1.0)
+    assert 'YAM policy targets clipped to limits: right_joint4: value=3.050000' in caplog.text
+    assert 'right_gripper: target=1.020000' in caplog.text
+    robot.close()
+
+
+def test_joint_limit_mode_rejects_unknown_value():
+    cfg = config()
+    cfg.adapter_config['joint_limit_mode'] = 'ignore'
+    with pytest.raises(ValueError, match='joint_limit_mode must be reject or clip'):
+        yam.YAMRobot(cfg)
+
+
 def test_synthetic_yam_uses_same_split_without_loading_hardware(monkeypatch):
     def fail(*_):
         raise AssertionError('Hardware must not load in test mode')
@@ -600,7 +699,7 @@ async def test_local_trial_yam_contract_and_hardware_open_after_confirmation(tmp
     class Client:
         def __init__(self, config, *args, **kwargs):
             assert kwargs['joint_count'] == 12
-            assert kwargs['action_spaces'] == {'joint_position': 14}
+            assert kwargs['action_spaces'] == {'joint_position': 14, 'eef_abs_pose': 14}
             self.model = {'action_space': 'joint_position', 'action_dim': 14}
         async def connect(self, **kwargs):
             assert not hardware

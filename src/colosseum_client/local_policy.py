@@ -46,6 +46,7 @@ class LocalPolicyClient(ColosseumClient):
         self.control_base = urlunsplit(('wss' if parts.scheme == 'https' else 'ws', parts.netloc,
                                        parts.path.rstrip('/'), '', ''))
         self.llm_api_keys = dict(getattr(config, "llm_api_keys", {}))
+        self.llm_account_logins = dict(getattr(config, "llm_account_logins", {}))
         self.router_token = config.token
         self.institution = config.institution.strip()
         self.test_robot = config.test or config.robot_type == "test"
@@ -70,7 +71,8 @@ class LocalPolicyClient(ColosseumClient):
         self.run_id = evaluation_run
         self.control = await connect(self.control_base + f'/api/eval/runs/{evaluation_run}/local',
             additional_headers={'Authorization': f'Bearer {self.router_token}', 'X-Colosseum-Institution': quote(self.institution,safe='')},
-            proxy=None, open_timeout=10, max_size=65536)
+            proxy=None, open_timeout=10, max_size=65536,
+            ping_interval=self.policy_ping_interval, ping_timeout=self.policy_ping_timeout)
         preparation = await receive_control(self.control)
         if preparation.get('type') != 'prepare' or preparation.get('run_id') != evaluation_run or preparation.get('protocol_version') != 1:
             raise ProtocolError('Invalid Router preparation')
@@ -94,7 +96,9 @@ class LocalPolicyClient(ColosseumClient):
         from .llm_credentials import local_preparation
         await self.connection.send(encode_control(
             local_preparation({**preparation, 'robot_type': self.hardware_robot_type},
-                              self.llm_api_keys, self.router_url)))
+                              self.llm_api_keys, self.router_url,
+                              account_logins=self.llm_account_logins,
+                              use_local_action_contract=self.use_local_action_contract)))
         async with timeout(self.prepare_timeout):
             while True:
                 ready = await receive_control(self.connection, self.prepare_timeout)
@@ -137,6 +141,8 @@ class LocalPolicyClient(ColosseumClient):
                             if isinstance(parsed, dict):
                                 extra = parsed
                     effective = extra.get('effective_model', ready.get('effective_model'))
+                    if effective is None and self.router_model.get('model_type', 'vla') != 'llm':
+                        effective = self.router_model
                     if (not isinstance(effective, dict)
                             or effective.get('url') != self.router_model.get('url')
                             or effective.get('revision') != self.router_model.get('revision')

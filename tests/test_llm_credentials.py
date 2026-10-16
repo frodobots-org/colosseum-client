@@ -76,3 +76,24 @@ def test_shared_relay_selects_key_by_model_name(name, provider):
     assert 'api_key' not in prepare
     with pytest.raises(ValueError, match='no matching'):
         local_preparation(prepare, {k:v for k,v in keys.items() if k != provider}, 'ws://localhost:8000')
+
+
+def test_claude_account_login_is_declared_without_api_key():
+    cfg = config(llm_api_keys={'openai': 'openai-secret', 'xai': 'xai-secret'},
+                 llm_account_logins={'anthropic': 'claude-code'})
+    assert cfg.llm_providers == ['openai', 'xai', 'anthropic']
+    assert cfg.llm_api_urls == [
+        'https://api.openai.com/v1', 'https://api.x.ai/v1', 'https://api.anthropic.com/v1']
+    prepare = {'model': {'model_type': 'llm', 'name': 'claude-opus-5-5',
+                         'url': 'https://relay.example/v1'}}
+    actual = local_preparation(prepare, cfg.llm_api_keys, cfg.policy_server_url,
+                               account_logins=cfg.llm_account_logins)
+    assert json.loads(actual['message'])['client_options']['auth_method'] == 'claude-code'
+    assert 'api_key' not in actual
+    assert actual['model'] == prepare['model']
+
+
+def test_account_login_must_not_overlap_key():
+    with pytest.raises(ValueError, match='Choose an API key'):
+        config(llm_api_keys={'anthropic': 'secret'},
+               llm_account_logins={'anthropic': 'claude-code'})

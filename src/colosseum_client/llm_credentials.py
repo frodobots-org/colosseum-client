@@ -1,5 +1,6 @@
 """BYOK credentials stay on the Client -> Policy Server connection."""
 import ipaddress
+import json
 import os
 from collections.abc import Mapping
 from urllib.parse import urlsplit
@@ -35,8 +36,9 @@ def require_secure_policy_url(url):
         raise ValueError('LLM keys require wss:// or a loopback ws:// SSH tunnel to Policy Server')
 
 
-def local_preparation(preparation, keys, policy_url):
-    """Return a copy carrying only this model's key; never alter Router data."""
+def local_preparation(preparation, keys, policy_url, *, account_logins=None,
+                      use_local_action_contract=False):
+    """Carry only the assigned model's local authentication; preserve Router identity."""
     model = preparation['model']
     if model.get('model_type', 'vla') != 'llm':
         return preparation
@@ -44,7 +46,15 @@ def local_preparation(preparation, keys, policy_url):
     provider = next((provider for prefix, provider in
                      [('gpt-', 'openai'), ('grok-', 'xai'), ('claude-', 'anthropic')]
                      if model.get('name', '').startswith(prefix)), None)
+    logins = account_logins or {}
+    options = {'use_local_action_contract': True} if use_local_action_contract else {}
+    if provider == 'anthropic' and logins.get('anthropic') == 'claude-code':
+        options['auth_method'] = 'claude-code'
+        return {**preparation, 'message': json.dumps({'client_options': options})}
     key = keys.get(provider)
     if not key:
         raise ValueError('Assigned LLM has no matching Client API key')
-    return {**preparation, 'api_key': key}
+    result = {**preparation, 'api_key': key}
+    if options:
+        result['message'] = json.dumps({'client_options': options})
+    return result
