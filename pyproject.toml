@@ -25,6 +25,8 @@ so101 = ["lerobot[feetech,intelrealsense]>=0.6,<0.7; python_version >= '3.12'"]
 so101-eef = ["lerobot[feetech,intelrealsense,placo-dep]>=0.6,<0.7; python_version >= '3.12'"]
 yam = ["pyrealsense2>=2.55,<3"]  # Install the pinned I2RT SDK separately; see docs/yam.md.
 modelscope = ["modelscope-hub>=0.4.5,<0.5"]
+# Agora RTC/RTM client for the Earth Rover Mini+ link; Linux x86_64 for real runs, macOS 13+ for development.
+earth-rover = ["playwright==1.60.0", "agora-python-server-sdk==2.4.9"]
 huggingface = ["huggingface-hub>=1.0,<2"]
 gui = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "anthropic>=1.15,<2"]  # scripts/eval_gui.py
 dev = ["grpcio-tools>=1.66", "pytest>=8", "pytest-asyncio>=0.24"]
@@ -33,6 +35,7 @@ dev = ["grpcio-tools>=1.66", "pytest>=8", "pytest-asyncio>=0.24"]
 colosseum-client-demo = "colosseum_client.cli:main"
 colosseum-robot = "colosseum_client.robot_cli:main"
 colosseum-upload-dataset = "colosseum_client.dataset_upload:main"
+colosseum-rover-ui = "colosseum_client.rover_ui:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

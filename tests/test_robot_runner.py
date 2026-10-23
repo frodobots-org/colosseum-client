@@ -45,3 +45,26 @@ def test_action_chunk_validates_timing_and_dimension():
     plan.actions.CopyFrom(tensor_from_numpy(np.zeros((2, 7), dtype=np.float32)))
     with pytest.raises(ProtocolError, match="shape"):
         action_chunk(plan, control_step=4)
+
+
+def test_extra_state_and_done_plans():
+    source = RobotObservation(
+        images={"front_image": np.zeros((2, 3, 3), dtype=np.uint8), "goal_image": np.zeros((2, 3, 3), dtype=np.uint8)},
+        joints=np.zeros(0, dtype=np.float32), gripper=np.zeros(0, dtype=np.float32),
+        cartesian_position=np.zeros(0, dtype=np.float32),
+        extra_state={"navigation_state": np.array([1.23456789012, 2.0], dtype=np.float64)},
+    )
+    message = protobuf_observation(source, instruction="go", control_step=0)
+    assert tensor_to_numpy(message.state["navigation_state"]).dtype == np.float64
+    np.testing.assert_array_equal(tensor_to_numpy(message.state["navigation_state"]), [1.23456789012, 2.0])
+    assert tensor_to_numpy(message.state["joint_position"]).size == 0
+    assert {sensor.sensor_id for sensor in message.sensors} == {"front_image", "goal_image"}
+    with pytest.raises(ValueError, match="duplicate observation state joint_position"):
+        protobuf_observation(RobotObservation({}, np.zeros(0), np.zeros(0), np.zeros(0), {"joint_position": np.ones(1)}),
+                             instruction="go", control_step=0)
+
+    plan = pb.ActionPlan(start_step=4, valid_until_step=4, actions=tensor_from_numpy(np.zeros((1, 2), dtype=np.float32)), done=True)
+    assert action_chunk(plan, control_step=4, expected_dim=2).shape == (1, 2)
+    plan.actions.CopyFrom(tensor_from_numpy(np.array([[0.1, 0.0]], dtype=np.float32)))
+    with pytest.raises(ProtocolError, match="done"):
+        action_chunk(plan, control_step=4, expected_dim=2)

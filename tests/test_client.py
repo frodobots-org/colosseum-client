@@ -37,7 +37,12 @@ def test_client_accepts_custom_robot_spec():
 
 def test_client_rejects_invalid_robot_spec():
     with pytest.raises(ValueError, match="joint_count"):
-        ColosseumClient("ws://router:8443", "clt_test", "robot", joint_count=0)
+        ColosseumClient("ws://router:8443", "clt_test", "robot", joint_count=-1)
+    with pytest.raises(ValueError, match="action_spaces"):
+        ColosseumClient("ws://router:8443", "clt_test", "robot", joint_count=0, has_gripper=False)
+    rover = ColosseumClient("ws://router:8443", "clt_test", "robot", robot_type="earth_rover_mini_plus",
+                            joint_count=0, has_gripper=False, control_hz=10, action_spaces={"base_velocity": 2})
+    assert rover.robot_spec.joint_count == 0 and rover.robot_spec.action_spaces[0].action_dim == 2
     with pytest.raises(ValueError, match="action_spaces"):
         ColosseumClient("ws://router:8443", "clt_test", "robot", action_spaces={"joint_position": 0})
 

@@ -52,6 +52,9 @@ class TrialRecorder:
                   'action': None if action is None else np.asarray(action).tolist()}
         if policy_action is not None:
             record['policy_action'] = np.asarray(policy_action).tolist()
+        extra_state = getattr(observation, 'extra_state', None)
+        if extra_state:
+            record['extra_state'] = {name: np.asarray(value).tolist() for name, value in extra_state.items()}
         try:
             self._queue.put_nowait((images, record))
         except queue.Full as exc:

@@ -4,6 +4,7 @@ from importlib import import_module
 from importlib.metadata import entry_points
 import numpy as np
 from .robots.franka import DroidRobot
+from .navigation import ACTION_SPACE, GOAL_GPS_KEY, NAV_STATE_KEY, NAV_STATE_NAMES, ROVER_TYPE
 from .robot_config import RobotClientConfig
 from .robot_interface import Robot, RobotObservation
 
@@ -13,6 +14,7 @@ _TODO_ADAPTERS = {
     'so101': 'colosseum_client.robots.so101:SO101Robot',
     'yam': 'colosseum_client.robots.yam:YAMRobot',
     'g1': 'colosseum_client.robots.g1:G1Robot',
+    ROVER_TYPE: 'colosseum_client.robots.earth_rover_mini_plus:EarthRoverMiniPlusRobot',
 }
 
 
@@ -73,11 +75,30 @@ class TestRobot(Robot):
         self.eef_state = np.zeros(14, dtype=np.float32)
         self.step = 0
         self.control_mode = control_mode
+        self.goal_gps = None
+        if self.robot_type == ROVER_TYPE:
+            # Synthetic mobile base: no joints, a 2-D velocity command, dead-reckoned navigation state.
+            self.joint_count, self.has_gripper = 0, False
+            self.action_dim, self.action_space_name = 2, ACTION_SPACE
+            self.joints = np.zeros(0, dtype=np.float32)
+            self.gripper = np.zeros(0, dtype=np.float32)
+            self.navigation = np.array([37.0, -122.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    def prepare_for_task(self, task):
+        import numpy as np
+        goal = task.get('goal') or {}
+        if self.robot_type == ROVER_TYPE and goal.get('type') == 'gps':
+            self.goal_gps = np.array([goal['latitude'], goal['longitude']], dtype=np.float64)
 
     def configure_model(self, model):
         import numpy as np
         self.action_dim = model['action_dim']
         self.action_space_name = model['action_space']
+        if self.robot_type == ROVER_TYPE:
+            if self.action_dim != 2 or self.action_space_name != ACTION_SPACE:
+                raise ValueError('Synthetic Earth Rover requires 2-D base_velocity')
+            self.joint_count = 0
+            return
         self.joint_count = 7
         if self.robot_type == 'yam' and self.action_space_name in {'joint_position', 'eef_abs_pose'}:
             if self.action_dim != 14:
@@ -100,6 +121,11 @@ class TestRobot(Robot):
             image[:] = [32,128,224]
             image[:,self.step % self.width,:] = 255
             images[camera] = image
+        if self.robot_type == ROVER_TYPE:
+            extra = {NAV_STATE_KEY: self.navigation.copy()}
+            if self.goal_gps is not None:
+                extra[GOAL_GPS_KEY] = self.goal_gps.copy()
+            return RobotObservation(images, self.joints.copy(), self.gripper.copy(), np.zeros(0, dtype=np.float32), extra)
         cartesian = self.eef_state.copy() if self.action_space_name == 'eef_abs_pose' else np.zeros(6,dtype=np.float32)
         extra = ({'eef_state': np.r_[np.zeros(6, dtype=np.float32), self.gripper].astype(np.float32),
                   'eef_quat_wxyz': np.array([1, 0, 0, 0], dtype=np.float32)}
@@ -123,6 +149,15 @@ class TestRobot(Robot):
             self.gripper = value[[6, 13]].copy()
             self.step += 1
             return np.r_[self.joints[:6], self.gripper[:1], self.joints[6:], self.gripper[1:]]
+        elif self.robot_type == ROVER_TYPE:
+            linear, angular = np.clip(value, -1.0, 1.0)
+            period = 0.1
+            heading = (self.navigation[2] + angular * period * 90.0) % 360.0
+            radians = np.deg2rad(heading)
+            self.navigation[0] += linear * period * 1e-5 * np.cos(radians)
+            self.navigation[1] += linear * period * 1e-5 * np.sin(radians)
+            self.navigation[2], self.navigation[3] = heading, linear
+            self.navigation[5:9] = linear * 100.0
         else:
             if self.action_space_name.startswith('joint'):
                 self.joints = value[:-1].copy()

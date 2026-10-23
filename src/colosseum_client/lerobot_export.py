@@ -13,6 +13,8 @@ from PIL import Image
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .navigation import ACTION_NAMES, GOAL_GPS_KEY, NAV_STATE_KEY, NAV_STATE_NAMES, ROVER_TYPE
+
 
 # LeRobot's so101_follower feature names, so exports align with training datasets.
 SO101_NAMES = ("shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
@@ -52,7 +54,7 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     path = Path(path)
     if fps <= 0 or not cameras or len(set(cameras)) != len(cameras):
         raise ValueError("Positive FPS and unique cameras are required")
-    if any(camera not in {"head_image", "left_image", "right_image"} for camera in cameras):
+    if any(camera not in {"head_image", "left_image", "right_image", "front_image", "rear_image"} for camera in cameras):
         raise ValueError("Unknown camera")
     status = json.loads((path / "recording-status.json").read_text())
     if not status["complete"]:
@@ -69,7 +71,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     for row in rows:
         for key in ("joints", "gripper", "action"):
             value = np.asarray(row.get(key), dtype=np.float32)
-            if value.ndim != 1 or not value.size or not np.isfinite(value).all():
+            # A mobile base records empty joints and gripper; arms must have both.
+            required = key == "action" or robot_type != ROVER_TYPE
+            if value.ndim != 1 or (required and not value.size) or not np.isfinite(value).all():
                 raise ValueError(f"Missing or invalid {key}; older recordings may lack full state")
     cartesian = [np.asarray(row.get("cartesian_position"), dtype=np.float32) for row in rows]
     if any(v.ndim != 1 or not np.isfinite(v).all() for v in cartesian):
@@ -98,7 +102,22 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
     if robot_type == "so101" and any(
             len(row['joints']) != 5 or len(row['gripper']) != 1 or len(row['action']) != 6 for row in rows):
         raise ValueError("SO101 recording requires 5 joints, 1 gripper and 6-D actions")
-    vectors = {key: np.asarray(values, dtype=np.float32) for key, values in vectors.items()}
+    if robot_type == ROVER_TYPE:
+        navigation = [(row.get("extra_state") or {}).get(NAV_STATE_KEY) for row in rows]
+        if (any(row["joints"] or row["gripper"] or len(row["action"]) != 2 for row in rows)
+                or any(value is None or len(value) != len(NAV_STATE_NAMES) for value in navigation)
+                or not np.isfinite(np.asarray(navigation, dtype=np.float64)).all()):
+            raise ValueError("Earth Rover recording requires no joints, 2-D actions and a complete navigation_state")
+        vectors["observation.state"] = navigation
+        goals = [(row.get("extra_state") or {}).get(GOAL_GPS_KEY) for row in rows]
+        if any(goal is not None for goal in goals):
+            if any(goal is None or len(goal) != 2 for goal in goals):
+                raise ValueError("Incomplete goal_gps recording")
+            vectors["observation.goal_gps"] = goals
+    # GPS needs float64: float32 latitude/longitude is only metre-level.
+    precise = {"observation.state", "observation.goal_gps"} if robot_type == ROVER_TYPE else set()
+    vectors = {key: np.asarray(values, dtype=np.float64 if key in precise else np.float32)
+               for key, values in vectors.items()}
     capture = np.asarray([row["seconds"] for row in rows], dtype=np.float64)
     if not np.isfinite(capture).all() or np.any(capture < 0) or np.any(np.diff(capture) <= 0):
         raise ValueError("Capture times must be finite, nonnegative and strictly increasing")
@@ -118,6 +137,11 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
         context["state_action_order"] = ",".join(SO101_NAMES)
         context["state_action_units"] = "degrees; gripper opening 0 closed, 100 open"
         context["cartesian_state_available"] = bool(cartesian[0].size)
+    if robot_type == ROVER_TYPE:
+        context["state_action_order"] = ",".join(NAV_STATE_NAMES) + " | action: " + ",".join(ACTION_NAMES)
+        context["state_action_units"] = ("degrees (latitude, longitude, heading), m/s, percent, rpm; "
+                                         "actions normalized [-1, 1], +angular turns left")
+        context["cartesian_state_available"] = False
     signature = hashlib.sha256(raw + json.dumps(context, sort_keys=True).encode()).hexdigest()
     destination = path / "lerobot"
     if destination.exists():
@@ -148,8 +172,11 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
                          for axis in ('x', 'y', 'z', 'yaw', 'pitch', 'roll', 'gripper')]
             if robot_type == "so101" and key in {"observation.state", "action"}:
                 names = list(SO101_NAMES)
-            features[key] = {"dtype": "float32", "shape": [array.shape[1]], "names": names}
-            columns[key] = pa.array(array.tolist(), type=pa.list_(pa.float32(), array.shape[1]))
+            if robot_type == ROVER_TYPE:
+                names = {"observation.state": list(NAV_STATE_NAMES), "action": list(ACTION_NAMES),
+                         "observation.goal_gps": ["goal_latitude", "goal_longitude"]}.get(key, names)
+            features[key] = {"dtype": str(array.dtype), "shape": [array.shape[1]], "names": names}
+            columns[key] = pa.array(array.tolist(), type=pa.list_(pa.from_numpy_dtype(array.dtype), array.shape[1]))
             stats[key] = _stats(array)
         scalars = {"timestamp": np.arange(count, dtype=np.float32) / fps,
                    "frame_index": np.arange(count, dtype=np.int64),

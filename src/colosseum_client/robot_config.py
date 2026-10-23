@@ -159,7 +159,8 @@ class RobotClientConfig:
             llm_api_keys=value.get("llm_api_keys", {}),
             llm_account_logins=value.get("llm_account_logins", {}),
             llm_control_mode=value.get("llm_control_mode", "joint_pos"),
-            cameras={name: str(camera_id) for name, camera_id in cameras.items()} or ({'head_image':'dummy'} if value.get('test', False) else {}),
+            cameras={name: str(camera_id) for name, camera_id in cameras.items()} or (
+                {'front_image' if robot_type == 'earth_rover_mini_plus' else 'head_image': 'dummy'} if value.get('test', False) else {}),
             scene=value.get("scene", ""),
             institution=value.get("institution", ""),
             evaluator=value.get("evaluator", ""),
