@@ -194,3 +194,13 @@ def test_skip_upload_requires_boolean(tmp_path, value):
     path.write_text(source + f'skip_upload: {value}\n')
     with pytest.raises(ValueError, match='skip_upload must'):
         RobotClientConfig.from_yaml(path)
+
+
+def test_dummy_rover_defaults_to_the_front_camera(tmp_path):
+    from colosseum_client.adapters import make_robot, TestRobot
+    path = tmp_path / 'robot.yaml'
+    path.write_text('robot_type: earth_rover_mini_plus\ntest: true\nurl: ws://localhost\ntoken: t\ncontrol_hz: 10\n')
+    config = RobotClientConfig.from_yaml(path)
+    assert config.cameras == {'front_image': 'dummy'}
+    adapter = make_robot(config)
+    assert isinstance(adapter, TestRobot) and adapter.get_observation().images['front_image'].shape == (288, 512, 3)

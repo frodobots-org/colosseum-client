@@ -4,6 +4,7 @@ from colosseum_client import Robot
 from colosseum_client.adapters import TestRobot as SyntheticRobot
 from colosseum_client.robots.franka import DroidRobot
 from colosseum_client.robots.g1 import G1Robot
+from colosseum_client.robots.earth_rover_mini_plus import EarthRoverMiniPlusRobot
 from colosseum_client.robots.so101 import SO101Robot
 from colosseum_client.robots.yam import YAMRobot
 
@@ -26,7 +27,7 @@ def test_each_lifecycle_method_is_required(missing):
         incomplete()
 
 
-@pytest.mark.parametrize('robot', [DroidRobot, SO101Robot, YAMRobot, G1Robot, SyntheticRobot])
+@pytest.mark.parametrize('robot', [DroidRobot, SO101Robot, YAMRobot, G1Robot, SyntheticRobot, EarthRoverMiniPlusRobot])
 def test_builtin_robots_inherit_and_override_lifecycle_methods(robot):
     assert issubclass(robot, Robot)
     assert not robot.__abstractmethods__

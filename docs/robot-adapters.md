@@ -71,6 +71,7 @@ real inference validation as separate milestones.
 | `so101` | LeRobot Feetech driver + LeRobot cameras; [setup and behavior](so101.md) |
 | `yam` | Bimanual I2RT + three RealSense cameras; [setup and validation limits](yam.md) |
 | `g1` | TODO template; no hardware driver |
+| `earth_rover_mini_plus` | Mobile base over the FrodoBots platform; [contract, safety and setup](earth-rover-mini-plus.md) |
 
 YAM requires calibrated limits and connection settings before hardware can open.
 
@@ -191,3 +192,15 @@ colosseum-robot configs/robot.yaml
 The TODO templates intentionally fail in this mode too. The legacy
 `--inference-only` runner remains real-DROID-only; other adapters and dummy mode
 are rejected there instead of silently opening DROID.
+
+## Mobile bases and extra state
+
+A robot with no joints sets `joint_count = 0`, `has_gripper = False` and its own
+action space (the Earth Rover Mini+ uses `base_velocity` with two values).
+`RobotObservation.extra_state` carries additional named vectors to the policy
+(`Observation.state[name]`) and into the recording; images that are not
+configured cameras (a `goal_image` reference photo) reach the policy but are
+never recorded. Two optional hooks serve navigation adapters:
+`prepare_for_task(task)` receives the Router's task (goal, limits) once before
+the first observation, and the trial ends early when a policy sends a plan with
+`done=True` or when `task.navigation.timeout_s` elapses.

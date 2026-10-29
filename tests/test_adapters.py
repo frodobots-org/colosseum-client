@@ -18,7 +18,7 @@ def test_todo_adapters_fail_explicitly(name):
         make_robot(config(robot_type=name))
 
 
-@pytest.mark.parametrize('name', ['so101', 'yam', 'g1', 'missing_robot'])
+@pytest.mark.parametrize('name', ['so101', 'yam', 'g1', 'earth_rover_mini_plus', 'missing_robot'])
 def test_dummy_mode_does_not_load_hardware(name):
     robot = make_robot(config(robot_type=name, test=True))
     assert isinstance(robot, adapters.TestRobot)

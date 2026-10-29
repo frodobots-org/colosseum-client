@@ -1,0 +1,39 @@
+# Earth Rover Mini+ evaluation client. Copy to configs/robot.yaml; keep tokens out of Git.
+router_url: wss://YOUR_ROUTER
+token: REPLACE_WITH_CLIENT_TOKEN           # Client token (not Admin/Policy)
+institution: YOUR_INSTITUTION
+robot_type: earth_rover_mini_plus
+track: 2                                   # 1 = Open (pass --goal-gps LAT,LON or --goal-image PATH), 2 = Fine-tuning
+scene: REPLACE_WITH_SITE_DESCRIPTION
+evaluator: REPLACE_WITH_EVALUATOR_NAME
+policy_server_url: null                    # Remote inference only; local mode is not supported for the rover
+control_hz: 10                             # The rover's command rate; policies register 10 Hz too
+deadline_ms: 5000                          # Longer policy waits are safe (the watchdog stops the rover) but give stop-and-go motion
+max_trial_steps: 3000                      # >= timeout_s * control_hz so the wall-clock timeout governs Open trials
+image_width: 512
+image_height: 288
+cameras:
+  front_image: front                       # Rover camera names, not device IDs
+  # rear_image: rear                       # Optional; if listed it must arrive every step (and the task must list it)
+adapter_config:
+  # bot_slug: YOUR_BOT_SLUG                # Optional: otherwise --bot SLUG or a prompt at start
+  # mission_slug: YOUR_MISSION_SLUG        # Optional: otherwise the client lists the bot's SDK-enabled missions and asks, like the SDK
+  # checkpoint: 3                          # Optional: which mission checkpoint is the destination (default: the last)
+  frodobots_api_url: https://frodobots-web-api.onrender.com/api/v1
+  sdk_token: env:FRODOBOTS_SDK_TOKEN       # Organizer sdk_access_token of a NON-admin account; env:NAME reads the environment
+  goal_dir: goals                          # Fine-tuning photo goals: <goal_dir>/<task.goal.file>, checked against the task's sha256
+  command_ttl_s: 1.0                       # Zeros are sent when no new action arrived within this time
+  # front_max_age_s: 2.0       # end the trial when the newest front frame is older than this; 4-5 on a weak 4G link
+  # telemetry_max_age_s: 3.0   # the same for the rover's RTM reports
+  max_linear: 1.0                          # Scale applied to action[0] after clipping to [-1, 1]
+  max_angular: 1.0                         # Scale applied to action[1]; +angular turns left
+  timeout_s: 300                           # Open Track trial limit sent to the Router (Fine-tuning tasks carry their own)
+  stopped_s: 2                             # Hold time after the stop before the rubric check
+  # link: simulated                        # Dry-run the adapter without a rover (still a real Router evaluation)
+recording: true
+skip_upload: false
+test: false                                # true: synthetic rover, no link, no goal files needed
+# Operator machine: Linux x86_64 for real runs (macOS 13+ for development), with ffmpeg and
+#   uv sync --extra earth-rover
+# First physical run: colosseum-robot configs/robot.yaml --no-execute-action
+# Press Enter during a trial only to abort it.

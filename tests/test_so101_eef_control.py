@@ -6,7 +6,7 @@ import pytest
 
 from colosseum_client.robots.so101 import MOTORS
 from colosseum_client.robots.so101_eef import SO101EEFController
-from lerobot.utils.rotation import Rotation
+Rotation = pytest.importorskip("lerobot.utils.rotation").Rotation  # the so101-eef extra; not installed in CI
 
 
 class Kinematics:

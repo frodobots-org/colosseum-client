@@ -48,6 +48,7 @@ action retains its numeric record only; its image is not included in the dataset
 | [SO-ARM101](src/colosseum_client/robots/so101.py) | `so101` | [LeRobot driver and setup](docs/so101.md) |
 | [Bimanual YAM](src/colosseum_client/robots/yam.py) | `yam` | [I2RT driver and setup](docs/yam.md); hardware validation pending |
 | [Unitree G1](src/colosseum_client/robots/g1.py) | `g1` | TODO |
+| [Earth Rover Mini+](src/colosseum_client/robots/earth_rover_mini_plus.py) | `earth_rover_mini_plus` | [FrodoBots platform link and setup](docs/earth-rover-mini-plus.md); physical validation pending |
 
 [Adding a new robot](docs/robot-adapters.md)
 

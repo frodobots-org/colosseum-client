@@ -72,3 +72,43 @@ def test_robot_lifecycle_stays_on_one_worker_thread(tmp_path, monkeypatch, fail_
     assert events[0][0]=='create' and events[-1][0]=='close'
     assert len({thread for _,thread in events})==1
     assert events[0][1]!=main_thread
+
+
+
+@pytest.mark.parametrize('ending', ['done', 'timeout'])
+def test_navigation_trials_end_on_done_or_wall_clock_timeout(tmp_path, monkeypatch, capsys, ending):
+    events = []
+    class Robot:
+        joint_count=0; has_gripper=False; action_dim=2; action_space_name='base_velocity'
+        def __init__(self, config): pass
+        def prepare_for_task(self, task): events.append(('task', task['goal']['type'], threading.get_ident()))
+        def get_observation(self): return object()
+        def execute(self, action): events.append(('execute', tuple(action), threading.get_ident()))
+        def close(self): events.append(('close', None, threading.get_ident()))
+    plans = []
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        async def connect(self, **kwargs): return SimpleNamespace(action_spaces=['base_velocity'])
+        async def infer(self, *args, **kwargs):
+            plan = SimpleNamespace(done=ending == 'done' and len(plans) >= 1)
+            plans.append(plan)
+            return plan
+        async def close(self): pass
+    finished = []
+    api = SimpleNamespace(request=lambda *args: finished.append(args))
+    monkeypatch.setattr(e, 'ColosseumClient', Client)
+    monkeypatch.setattr(e, 'protobuf_observation', lambda *a, **kw: object())
+    monkeypatch.setattr(e, 'action_chunk', lambda plan, **kw: np.zeros((1, 2)) if plan.done else np.tile([[0.3, 0.0]], (2, 1)))
+    config = RobotClientConfig(url='ws://test', token='test', cameras={}, control_hz=1000, recording=False)
+    task = {'instruction': 'Drive', 'cameras': [], 'max_steps': 10000,
+            'goal': {'type': 'gps', 'latitude': 0, 'longitude': 0}, 'navigation': {'timeout_s': 0.1 if ending == 'timeout' else 300}}
+    asyncio.run(e.run_trial(config, {'task': task}, {'id': 'run-nav'}, tmp_path, api, robot_factory=Robot))
+    output = capsys.readouterr().out
+    executed = [event for event in events if event[0] == 'execute']
+    if ending == 'done':
+        assert 'declared the task done' in output and len(plans) == 2
+        assert executed[-1][1] == (0.0, 0.0) and len(executed) == 3
+    else:
+        assert 'navigation timeout' in output and 3 <= len(executed) < 10000
+    assert events[0][0] == 'task' and events[-1][0] == 'close' and finished[0][1] == '/runs/run-nav/finish'
+    assert len({event[2] for event in events}) == 1
