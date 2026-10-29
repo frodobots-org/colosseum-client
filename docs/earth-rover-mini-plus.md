@@ -129,6 +129,13 @@ observation waits for a frame from the new channel. When the trial ends, the rid
 for the platform to clear the rover's channel, then requests the preview again (and retries once); if the rover
 does not come back, Disconnect and Connect.
 
+A rover in `mission` drive mode is `mission_ready` only within 15 m of its origin (the mission's first
+checkpoint), and FrodoBots refuses a new ride otherwise. A trial that ends near the destination therefore leaves
+the rover unable to start the next one until it is back at the start. Without the operator page's preview (some
+rovers publish no video on a token-only session), set `adapter_config.keep_ride_after_trial: true`: the trial's
+ride stays open, a ride started by the same FrodoBots user rejoins it to drive the rover back with video, and
+ending that ride at the start makes the rover `mission_ready` again.
+
 ## Scoring
 
 At the end of each trial the operator enters the V4 score (0–4). It maps to the
