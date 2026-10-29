@@ -81,7 +81,7 @@ drivers must clean up their own partially opened resources if construction fails
 The HTTP base URL is derived from `router_url`: `wss://host:port` becomes
 `https://host:port`, and `ws://host:port` becomes `http://host:port`. Set `api_url`
 only when the HTTP API uses a different address. For the example configuration,
-the base URL is `https://191.222.219.43`.
+the base URL is `https://robocolosseum-api.onrender.com`.
 
 Evaluation requests use the Client token and its bound institution:
 

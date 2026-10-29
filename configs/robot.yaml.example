@@ -1,7 +1,7 @@
 ## --- Connection and robot ---
 
 ## Router WebSocket address.
-router_url: wss://191.222.219.43
+router_url: wss://robocolosseum-api.onrender.com
 
 ## Obtain your Client Token from an admin.
 token: clt_replace_with_token_from_admin
