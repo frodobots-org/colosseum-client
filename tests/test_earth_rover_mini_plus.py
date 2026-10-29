@@ -565,6 +565,20 @@ def test_end_trial_waits_out_the_ride_release_and_retries_the_preview(monkeypatc
     assert link.diagnostics()['started'] is False and link.diagnostics()['frames'] == {'front_image': {'count': 0, 'age_s': None}}
 
 
+def test_keep_ride_after_trial_leaves_the_ride_open_on_close():
+    """A mission-mode rover far from its origin cannot start a new ride, so the operator can keep this one."""
+    from colosseum_client.robots.earth_rover import frodobots_link as module
+    for keep, expected in ((False, ['end_ride']), (True, [])):
+        calls = []
+        settings = {'sdk_token': 'secret', 'bot_slug': 'frodobot_x', 'keep_ride_after_trial': keep}
+        link = module.FrodobotsRoverLink(settings, ['front_image'], (2, 2))
+        link.session = SimpleNamespace(mission_slug='plaza', end_ride=lambda: calls.append('end_ride'),
+                                       close=lambda: calls.append('close'))
+        link.credentials = SimpleNamespace(channel='ride_42')
+        link.close()
+        assert calls == expected + ['close'] and not link.started
+
+
 def test_staleness_limits_are_configurable(tmp_path, monkeypatch):
     monkeypatch.setattr(rover, 'make_link', lambda settings, cameras, size: SimulatedRoverLink(cameras, size, stale=True))
     tolerant = rover.EarthRoverMiniPlusRobot(rover_config(tmp_path, front_max_age_s=20, telemetry_max_age_s=20))

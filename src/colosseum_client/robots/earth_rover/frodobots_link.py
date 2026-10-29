@@ -36,6 +36,10 @@ class FrodobotsRoverLink:
         self.cameras = list(cameras)
         self.size = size
         self.first_frame_timeout = float(settings.get('first_frame_timeout_s', 15))
+        # A mission-mode rover is only mission_ready within 15 m of its origin, so after a trial that ends far away
+        # no new ride can start. Keeping the ride lets the operator drive it back (start_ride by the same user
+        # rejoins it) and end it at the start.
+        self.keep_ride = bool(settings.get('keep_ride_after_trial', False))
         self.chrome_executable = settings.get('chrome_executable_path')
         self.codec = settings.get('codec', 'vp8')
         self.credentials = None
@@ -204,7 +208,9 @@ class FrodobotsRoverLink:
         confirmed = self.stop(confirm=True) if self.started else True
         self._teardown_media()
         try:
-            if confirmed and self.credentials is not None:
+            if confirmed and self.credentials is not None and self.keep_ride:
+                print('Ride kept open (keep_ride_after_trial): drive the rover back, then end the ride.', flush=True)
+            elif confirmed and self.credentials is not None:
                 self.session.end_ride()
         finally:
             if self.browser is not None:
