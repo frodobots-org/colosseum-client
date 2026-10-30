@@ -34,7 +34,7 @@ FAULT_AFTER_S = 2.0
 SETTINGS = {'bot_slug', 'mission_slug', 'checkpoint', 'frodobots_api_url', 'sdk_token', 'goal_dir', 'goal_gps', 'goal_image',
             'command_ttl_s', 'max_linear', 'max_angular', 'link', 'telemetry', 'timeout_s', 'stopped_s',
             'first_frame_timeout_s', 'transport', 'chrome_executable_path', 'codec',
-            'front_max_age_s', 'telemetry_max_age_s'}
+            'front_max_age_s', 'telemetry_max_age_s', 'keep_ride_after_trial'}
 
 
 def resolve_secret(value):

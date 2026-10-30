@@ -579,6 +579,22 @@ def test_keep_ride_after_trial_leaves_the_ride_open_on_close():
         assert calls == expected + ['close'] and not link.started
 
 
+def test_keep_ride_after_trial_stays_on_the_ride_between_trials(tmp_path, monkeypatch):
+    """The operator page ends trials with end_trial: keeping the ride keeps its video for the drive back."""
+    from colosseum_client.robots.earth_rover import frodobots_link as module
+    calls = []
+    settings = {'sdk_token': 'secret', 'bot_slug': 'frodobot_x', 'keep_ride_after_trial': True}
+    link = module.FrodobotsRoverLink(settings, ['front_image'], (2, 2))
+    link.session = SimpleNamespace(mission_slug='plaza', end_ride=lambda: calls.append('end_ride'))
+    link.started = True
+    monkeypatch.setattr(link, 'stop', lambda confirm=True: True)
+    monkeypatch.setattr(link, '_open', lambda mission_slug: calls.append(('open', mission_slug)))
+    link.end_trial()
+    link.start('plaza')  # the next trial on the same mission reuses the ride
+    assert calls == [] and link.started
+    rover.EarthRoverMiniPlusRobot(rover_config(tmp_path, keep_ride_after_trial=True)).close()  # the adapter accepts it
+
+
 def test_staleness_limits_are_configurable(tmp_path, monkeypatch):
     monkeypatch.setattr(rover, 'make_link', lambda settings, cameras, size: SimulatedRoverLink(cameras, size, stale=True))
     tolerant = rover.EarthRoverMiniPlusRobot(rover_config(tmp_path, front_max_age_s=20, telemetry_max_age_s=20))
