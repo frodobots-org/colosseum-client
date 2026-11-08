@@ -13,6 +13,17 @@ import numpy as np
 from PIL import Image
 
 
+def ffmpeg_vfr_args():
+    """ffmpeg options that keep each frame's recorded duration (variable frame rate).
+
+    ffmpeg 5.1 added -fps_mode to replace -vsync, and recent releases reject -vsync;
+    Ubuntu 22.04 still ships ffmpeg 4.4, which has only -vsync.
+    """
+    # Bytes, not text: the help includes non-ASCII units (µs, °C) that a non-UTF-8 locale cannot decode.
+    usage = subprocess.run(['ffmpeg', '-hide_banner', '-h', 'full'], capture_output=True).stdout
+    return ['-fps_mode' if b'\n-fps_mode' in usage else '-vsync', 'vfr']
+
+
 class TrialRecorder:
     def __init__(self, path: Path, cameras: list[str], *, queue_size: int = 256):
         if shutil.which('ffmpeg') is None:
@@ -112,7 +123,7 @@ class TrialRecorder:
             (folder / 'frames.txt').write_text('\n'.join(lines) + '\n')
             temp = folder / 'video.pending.mp4'
             subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat',
-                '-safe', '1', '-i', 'frames.txt', '-vsync', 'vfr', '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+                '-safe', '1', '-i', 'frames.txt', *ffmpeg_vfr_args(), '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
                 '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', temp.name],
                 cwd=folder, check=True)
             final = folder / 'video.mp4'

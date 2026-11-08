@@ -1,5 +1,8 @@
 import json
 import subprocess
+from types import SimpleNamespace
+
+import pytest
 import numpy as np
 from colosseum_client.recording import TrialRecorder
 from colosseum_client.droid_robot import RobotObservation
@@ -86,3 +89,13 @@ def test_disk_failure_is_propagated_and_blocks_encoding(tmp_path,monkeypatch):
     assert isinstance(exc.value.__cause__,OSError)
     assert not recorder._worker.is_alive()
     with pytest.raises(RuntimeError,match='incomplete'):TrialRecorder.encode(tmp_path,['head_image'])
+
+
+@pytest.mark.parametrize('usage, flag', [
+    (b'usage: ffmpeg\n-fps_mode[:<stream_spec>]  set framerate mode for matching video streams\n', '-fps_mode'),
+    (b'usage: ffmpeg\n-vsync             video sync method\n', '-vsync'),   # ffmpeg 4.4, as on Ubuntu 22.04
+])
+def test_variable_frame_rate_option_matches_the_installed_ffmpeg(monkeypatch, usage, flag):
+    from colosseum_client import recording
+    monkeypatch.setattr(recording.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=usage))
+    assert recording.ffmpeg_vfr_args() == [flag, 'vfr']

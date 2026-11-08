@@ -20,6 +20,8 @@ import yaml
 from urllib.parse import parse_qs, unquote, urlparse
 from colosseum_client.task_annotations import exported_difficulties, set_difficulty
 
+from colosseum_client.recording import ffmpeg_vfr_args
+
 CAMS = ('head_image', 'left_image', 'right_image')
 HERE = Path(__file__).parent
 LOCK = threading.Lock()
@@ -67,7 +69,7 @@ def preview(ev, run_id, cam):
         listing.write_text('\n'.join(lines) + '\n')
         tmp = dst.with_suffix('.pending.mp4')
         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0',
-                        '-i', str(listing), '-vsync', 'vfr', '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+                        '-i', str(listing), *ffmpeg_vfr_args(), '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
                         '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
                         str(tmp)], check=True)
         tmp.replace(dst)
