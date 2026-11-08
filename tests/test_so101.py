@@ -113,6 +113,73 @@ def test_failed_return_still_releases_and_is_reported(hardware):
     assert hardware[0].disconnected == 1
 
 
+OVERLOAD = "Failed to write 'Torque_Enable' on id_=6 with '0' after 6 tries. [RxPacketError] Overload error!"
+
+
+class Bus:
+    """Feetech bus whose servos carry out a torque-off write even when they answer with an alarm."""
+    def __init__(self, stuck=(), read_fails=False):
+        self.motors = dict.fromkeys(so101.MOTORS)
+        self.torque = dict.fromkeys(so101.MOTORS, 1)
+        self.is_connected, self.stuck, self.read_fails = True, stuck, read_fails
+    def write(self, name, motor, value, num_retry):
+        assert (name, value) == ('Torque_Enable', 0)
+        if motor not in self.stuck:
+            self.torque[motor] = 0
+        if motor == 'gripper':
+            raise RuntimeError(OVERLOAD)
+    def sync_read(self, name, normalize, num_retry):
+        assert name == 'Torque_Enable' and normalize is False
+        if self.read_fails:
+            raise ConnectionError('There is no status packet!')
+        return dict(self.torque)
+    def disconnect(self, disable_torque):
+        assert disable_torque is False
+        self.is_connected = False
+
+
+def alarmed_disconnect(follower, bus):
+    """LeRobot's disconnect raises on the gripper's alarm before closing the port and cameras."""
+    def disconnect():
+        raise RuntimeError(OVERLOAD)
+    follower.disconnect, follower.bus = disconnect, bus
+    follower.cameras = {'head_image': Camera(), 'left_image': Camera()}
+    return follower.cameras.values()
+
+
+def test_gripper_overload_at_shutdown_releases_torque_port_and_cameras(hardware, caplog):
+    robot = make_robot(config(return_to_start=False))
+    bus = Bus()
+    cameras = alarmed_disconnect(hardware[0], bus)
+    robot.close()
+    assert not any(bus.torque.values()) and not bus.is_connected
+    assert not any(camera.alive for camera in cameras)
+    assert 'Overload error' in caplog.text and 'torque is confirmed off' in caplog.text
+
+
+@pytest.mark.parametrize('bus, unconfirmed', [
+    (Bus(stuck=('gripper',)), 'gripper'),
+    (Bus(read_fails=True), ', '.join(so101.MOTORS)),
+])
+def test_unconfirmed_torque_release_is_reported_after_releasing_the_rest(hardware, bus, unconfirmed):
+    robot = make_robot(config(return_to_start=False))
+    cameras = alarmed_disconnect(hardware[0], bus)
+    with pytest.raises(RuntimeError, match='SO101 shutdown failed') as failure:
+        robot.close()
+    assert str(failure.value.__cause__) == f'SO101 torque may still be on for {unconfirmed}'
+    assert not bus.is_connected and not any(camera.alive for camera in cameras)
+
+
+def test_closed_port_after_camera_failure_needs_no_torque_writes(hardware):
+    robot = make_robot(config(return_to_start=False))
+    bus = Bus()
+    bus.is_connected = False
+    bus.write = bus.sync_read = None
+    cameras = alarmed_disconnect(hardware[0], bus)
+    robot.close()
+    assert not any(camera.alive for camera in cameras)
+
+
 class Camera:
     def __init__(self, alive=True, connect_failures=0):
         self.alive, self.connect_failures, self.connects = alive, connect_failures, 0

@@ -20,6 +20,7 @@ GRIPPER_RANGE = (0.0, 100.0)
 _CAMERA_TYPES = ('realsense', 'opencv')
 _RETURN_HZ = 30
 _CONNECT_ATTEMPTS = 3
+_TORQUE_OFF_RETRIES = 2
 _SETTLE_SECONDS = 0.5
 # A wrist USB camera can drop off the bus when its cable flexes; the kernel
 # may need up to about a minute to re-enumerate it after a failed handshake.
@@ -72,7 +73,10 @@ def _open_follower(port, robot_id, calibration_dir, cameras, max_relative_target
                     f'SO101 {robot_id!r} is not calibrated; run lerobot-calibrate before evaluating')
             return follower
         except BaseException as exc:
-            _release(follower)
+            try:
+                _release(follower)
+            except Exception as release_error:
+                log.warning('SO101 cleanup after failed connection: %s', release_error)
             # Feetech buses occasionally corrupt one status packet ("Incorrect status
             # packet!"); LeRobot's set-up writes are not retried, so retry the connection.
             if not isinstance(exc, ConnectionError) or attempt == _CONNECT_ATTEMPTS:
@@ -82,17 +86,52 @@ def _open_follower(port, robot_id, calibration_dir, cameras, max_relative_target
 
 
 def _release(follower):
-    """Disable torque and free the port and cameras of a partly connected follower."""
+    """Disable torque, then free the serial port and cameras, even after a motor alarm.
+
+    LeRobot's disconnect raises at the first motor whose reply carries an alarm
+    bit, before it closes the port and cameras. A gripper squeezing an object
+    trips its overload protection and then flags every reply with an Overload
+    alarm, although the servo still carries out the write. So disable torque on
+    each motor, confirm it with a sync read (which ignores alarm bits), and
+    release the rest. Raises only if torque may still be on.
+    """
     try:
         follower.disconnect()
         return
-    except Exception:
-        log.debug('SO101 cleanup after failed connection', exc_info=True)
-    for resource in (follower.bus, *follower.cameras.values()):
+    except Exception as exc:
+        cause = exc
+    bus, unconfirmed = follower.bus, []
+    # LeRobot closes the port only after disabling torque, so a closed port needs nothing more.
+    if bus.is_connected:
+        unconfirmed = _disable_torque(bus)
         try:
-            resource.disconnect()
+            bus.disconnect(disable_torque=False)
         except Exception:
-            log.debug('SO101 partial cleanup failed', exc_info=True)
+            log.warning('SO101 serial port did not close', exc_info=True)
+    for camera in follower.cameras.values():
+        try:
+            camera.disconnect()
+        except Exception:
+            log.debug('SO101 camera release failed', exc_info=True)
+    if unconfirmed:
+        raise RuntimeError(f'SO101 torque may still be on for {", ".join(unconfirmed)}') from cause
+    log.warning('SO101 disconnect reported %s; torque is confirmed off and the port and cameras are '
+                'released', cause)
+
+
+def _disable_torque(bus):
+    """Write torque off to every motor; return the motors not confirmed off."""
+    for motor in bus.motors:
+        try:
+            bus.write('Torque_Enable', motor, 0, num_retry=_TORQUE_OFF_RETRIES)
+        except Exception as exc:
+            log.debug('SO101 %s torque-off write: %s', motor, exc)
+    try:
+        torque = bus.sync_read('Torque_Enable', normalize=False, num_retry=_TORQUE_OFF_RETRIES)
+    except Exception:
+        log.warning('SO101 could not read back motor torque', exc_info=True)
+        return list(bus.motors)
+    return [motor for motor in bus.motors if torque.get(motor) != 0]
 
 
 class SO101Robot(Robot):
@@ -320,7 +359,7 @@ class SO101Robot(Robot):
             except Exception as exc:
                 errors.append(exc)
         try:
-            self.follower.disconnect()
+            _release(self.follower)
         except Exception as exc:
             errors.append(exc)
         if errors:
