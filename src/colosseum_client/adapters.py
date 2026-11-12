@@ -58,6 +58,24 @@ def make_robot(config: RobotClientConfig, *, action_space: str = "joint_position
 
 
 
+# Action contract the real robot announces in remote trials, which carry no model spec.
+REMOTE_TEST_CONTRACTS = {
+    'yam': ({'action_space': 'joint_position', 'action_dim': 14}, 30),
+    'so101': ({'action_space': 'joint_position', 'action_dim': 6}, 30),
+}
+
+
+def remote_test_contract(config):
+    """The synthetic robot's model contract for a remote trial, or None to keep the default."""
+    entry = REMOTE_TEST_CONTRACTS.get(config.robot_type)
+    if entry is None:
+        return None
+    contract, control_hz = entry
+    if config.control_hz != control_hz:
+        raise ValueError(f'Synthetic {config.robot_type} matches the real robot: set control_hz: {control_hz}')
+    return contract
+
+
 class TestRobot(Robot):
     """Same adapter contract; generates state/RGB and applies actions in memory only."""
     joint_count = 7

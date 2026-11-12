@@ -42,6 +42,10 @@ class RobotClientConfig:
     deadline_ms: int = 30000
     image_width: int = 512
     image_height: int = 288
+    # Remote (Router-relayed) trials only: JPEG cuts a 3-camera YAM observation from ~2.8 MB to ~0.13 MB.
+    # Local mode always sends RAW_RGB to the loopback Policy Server.
+    image_encoding: str = "raw"
+    jpeg_quality: int = 85
 
     @property
     def llm_providers(self):
@@ -124,6 +128,8 @@ class RobotClientConfig:
             "deadline_ms",
             "image_width",
             "image_height",
+            "image_encoding",
+            "jpeg_quality",
         }
         unknown = value.keys() - allowed
         missing = {"url", "token", "cameras"} - value.keys()
@@ -189,6 +195,8 @@ class RobotClientConfig:
             deadline_ms=value.get("deadline_ms", cls.deadline_ms),
             image_width=value.get("image_width", 512),
             image_height=value.get("image_height", 288),
+            image_encoding=value.get("image_encoding", "raw"),
+            jpeg_quality=value.get("jpeg_quality", 85),
         )
         if type(config.recording) is not bool:
             raise ValueError("recording must be true or false")
@@ -204,6 +212,10 @@ class RobotClientConfig:
         )
         if any(not isinstance(number, int) or isinstance(number, bool) or number <= 0 for number in numbers):
             raise ValueError("control_hz, deadline_ms, image_width, and image_height must be positive")
+        if config.image_encoding not in {"raw", "jpeg"}:
+            raise ValueError("image_encoding must be raw or jpeg")
+        if type(config.jpeg_quality) is not int or not 1 <= config.jpeg_quality <= 100:
+            raise ValueError("jpeg_quality must be an integer in [1, 100]")
         if not isinstance(config.instruction, str):
             raise ValueError("instruction must be a string")
         if config.use_local_action_contract and not config.policy_server_url:

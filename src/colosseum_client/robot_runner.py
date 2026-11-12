@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import time
 
 import numpy as np
@@ -14,11 +15,20 @@ from .robot_config import RobotClientConfig
 from .tensors import tensor_from_numpy, tensor_to_numpy
 
 
+def _jpeg(rgb: np.ndarray, quality: int) -> bytes:
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
+
+
 def protobuf_observation(
     observation: RobotObservation,
     *,
     instruction: str,
     control_step: int,
+    image_encoding: str = "raw",
+    jpeg_quality: int = 85,
 ) -> pb.Observation:
     message = pb.Observation(
         robot_time_ns=time.time_ns(),
@@ -41,12 +51,12 @@ def protobuf_observation(
             raise ValueError(f"{image_id} must have RGB shape (height, width, 3)")
         frame = message.sensors.add(
             sensor_id=image_id,
-            encoding=pb.RAW_RGB,
+            encoding=pb.JPEG if image_encoding == "jpeg" else pb.RAW_RGB,
             capture_time_ns=capture_time_ns,
             width=rgb.shape[1],
             height=rgb.shape[0],
         )
-        frame.data = rgb.tobytes()
+        frame.data = _jpeg(rgb, jpeg_quality) if image_encoding == "jpeg" else rgb.tobytes()
     return message
 
 
@@ -93,6 +103,8 @@ async def run_robot(
         has_gripper=True,
         control_hz=config.control_hz,
         action_spaces={"joint_position": 8},
+        ping_interval=config.policy_ping_interval,
+        ping_timeout=config.policy_ping_timeout,
     )
     control_step = 0
     period = 1.0 / config.control_hz
@@ -111,6 +123,8 @@ async def run_robot(
                 current,
                 instruction=instruction,
                 control_step=control_step,
+                image_encoding=config.image_encoding,
+                jpeg_quality=config.jpeg_quality,
             )
             plan = await client.infer(request, deadline_ms=config.deadline_ms)
             actions = action_chunk(plan, control_step=control_step)

@@ -369,9 +369,16 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
             )
         else:
             robot = await robot_call(robot_factory, config)
+            if config.test:
+                # Remote deployments carry no model spec; give the synthetic robot its real contract.
+                from .adapters import remote_test_contract
+                contract = remote_test_contract(config)
+                if contract is not None and hasattr(robot, 'configure_model'):
+                    await robot_call(robot.configure_model, contract)
             client_options = dict(robot_type=config.robot_type, joint_count=robot.joint_count,
                 has_gripper=robot.has_gripper, control_hz=config.control_hz,
-                action_spaces={robot.action_space_name: robot.action_dim})
+                action_spaces={robot.action_space_name: robot.action_dim},
+                ping_interval=config.policy_ping_interval, ping_timeout=config.policy_ping_timeout)
             client = ColosseumClient(config.url, config.token, client_id='', **client_options)
         step = 0
         return_attempted = False
@@ -458,7 +465,10 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                 current = await robot_call(read_observation, robot, step, 'step_start')
                 captured_at = time.monotonic()
                 if actions is None or chunk_index >= len(actions):
-                    observation = protobuf_observation(current, instruction=task['instruction'], control_step=step)
+                    observation = protobuf_observation(
+                        current, instruction=task['instruction'], control_step=step,
+                        image_encoding='raw' if local_mode else config.image_encoding,
+                        jpeg_quality=config.jpeg_quality)
                     plan = await client.infer(observation, deadline_ms=config.deadline_ms)
                     actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
                     plan_done = bool(getattr(plan, 'done', False))

@@ -99,11 +99,20 @@ policy_server_url: ws://localhost:8000
 ## Per-request inference timeout in milliseconds; positive integer.
 # deadline_ms: 30000
 
-## Local Policy Server WebSocket ping interval in seconds; positive integer.
+## Policy Server WebSocket ping interval in seconds (local Policy Server and Router
+## connections); positive integer.
 # policy_ping_interval: 20
 
 ## Time to wait for a pong in seconds; positive integer, separate from inference timeout.
+## Raise it on slow uplinks: a pong waits behind the observation being uploaded.
 # policy_ping_timeout: 60
+
+## Camera encoding for remote (Router-relayed) trials: raw or jpeg. JPEG cuts a
+## three-camera YAM observation from about 2.8 MB to 0.13 MB per chunk; the Policy
+## Server must decode JPEG (colosseum-policy-server SDK with opencv). Local mode
+## always sends raw.
+# image_encoding: raw
+# jpeg_quality: 85
 
 ## Use the local Policy Server's effective action contract for the assigned model.
 ## Requires policy_server_url and a server that reports a compatible effective_model.

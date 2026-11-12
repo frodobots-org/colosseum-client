@@ -41,5 +41,7 @@ adapter_config:
 recording: true
 skip_upload: false
 max_trial_steps: 800
-# test: true bypasses all hardware, including calibration checks.
+# test: true bypasses all hardware, including calibration checks. In remote trials the
+# synthetic robot announces the real YAM contract (12 joints + 2 grippers, joint_position 14-D,
+# control_hz 30), so a remote Policy Server can be tested without the station.
 test: false
