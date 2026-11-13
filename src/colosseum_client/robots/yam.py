@@ -186,17 +186,35 @@ def _open_arm(channel, gripper_limits, *, calibration_offset=None):
 
 
 class _RealSenseCamera:
-    def __init__(self, serial, timeout_ms):
+    """One RealSense color stream; with ``depth`` also its depth, aligned to color.
+
+    Depth (metres, 0 = no reading) and the color intrinsics are only sent to
+    the local Policy Server; recordings and uploads stay RGB.
+    """
+
+    def __init__(self, serial, timeout_ms, depth=False):
         try:
             import pyrealsense2 as rs
         except ImportError as exc:
             raise RuntimeError('Install colosseum-client[yam] for RealSense cameras') from exc
         self.pipeline, self.timeout_ms = rs.pipeline(), timeout_ms
+        self.depth = depth
+        self.align = self.depth_scale = self.intrinsics = self._depth_m = None
         settings = rs.config()
         settings.enable_device(str(serial))
         settings.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+        if depth:
+            settings.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
         try:
-            self.pipeline.start(settings)
+            profile = self.pipeline.start(settings)
+            if depth:
+                # Each depth pixel then indexes the same color pixel; images are
+                # sent at the native 640x480, so the intrinsics need no scaling.
+                self.align = rs.align(rs.stream.color)
+                self.depth_scale = float(profile.get_device().first_depth_sensor().get_depth_scale())
+                k = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+                self.intrinsics = np.array([[k.fx, 0.0, k.ppx], [0.0, k.fy, k.ppy], [0.0, 0.0, 1.0]],
+                                           dtype=np.float32)
         except BaseException:
             try:
                 self.pipeline.stop()
@@ -205,10 +223,26 @@ class _RealSenseCamera:
             raise
 
     def read(self):
-        frame = self.pipeline.wait_for_frames(self.timeout_ms).get_color_frame()
+        frames = self.pipeline.wait_for_frames(self.timeout_ms)
+        if self.depth:
+            frames = self.align.process(frames)
+        frame = frames.get_color_frame()
         if not frame:
             raise RuntimeError('YAM camera returned no color frame')
+        if self.depth:
+            depth = frames.get_depth_frame()
+            if not depth:
+                raise RuntimeError('YAM depth camera returned no depth frame')
+            # Keep the depth of this same frameset for read_depth().
+            self._depth_m = (np.asanyarray(depth.get_data()).astype(np.float32)
+                             * np.float32(self.depth_scale))
         return np.asanyarray(frame.get_data()).copy()
+
+    def read_depth(self):
+        """Return (H x W float32 metres, 3 x 3 intrinsics) from the last read() frameset."""
+        if self._depth_m is None:
+            raise RuntimeError('YAM depth is unavailable before the first camera read')
+        return np.ascontiguousarray(self._depth_m), self.intrinsics.copy()
 
     def close(self):
         self.pipeline.stop()
@@ -220,15 +254,19 @@ class YAMRobot(Robot):
     action_dim = 14
     action_space_name = 'joint_position'
 
-    def __init__(self, config):
+    def __init__(self, config, *, depth=False):
         settings = dict(config.adapter_config)
         allowed = {'left_channel', 'right_channel', 'left_gripper_limits',
                    'right_gripper_limits', 'joint_low', 'joint_high',
                    'left_gripper_calibration_offset', 'right_gripper_calibration_offset',
                    'joint_max_step', 'joint_step_mode', 'joint_limit_mode', 'joint_limit_margin', 'gripper_max_step',
-                   'zero_position_tolerance', 'camera_timeout_ms'}
+                   'zero_position_tolerance', 'camera_timeout_ms', 'depth_camera'}
         if settings.keys() - allowed:
             raise ValueError(f'Unknown YAM settings: {sorted(settings.keys() - allowed)}')
+        # Only a Policy Server that asks for depth (CaP-X models) turns it on.
+        self.depth_role = settings.get('depth_camera', 'head_image') if depth else None
+        if depth and self.depth_role not in CAMERAS:
+            raise ValueError(f'adapter_config.depth_camera must be one of {", ".join(CAMERAS)}')
         self.low = _vector(settings.get('joint_low'), 12, 'joint_low')
         self.high = _vector(settings.get('joint_high'), 12, 'joint_high')
         self.max_step = _vector(settings.get('joint_max_step'), 12, 'joint_max_step')
@@ -292,8 +330,12 @@ class YAMRobot(Robot):
         try:
             # Check cameras before enabling either arm. No automatic homing.
             for name in CAMERAS:
-                self.cameras[name] = _RealSenseCamera(config.cameras[name], timeout)
+                self.cameras[name] = (_RealSenseCamera(config.cameras[name], timeout, depth=True)
+                                      if name == self.depth_role
+                                      else _RealSenseCamera(config.cameras[name], timeout))
                 self.cameras[name].read()
+            if self.depth_role is not None:
+                self.cameras[self.depth_role].read_depth()
             for channel, calibration, offset in zip(channels, limits, calibration_offsets):
                 if offset is None:
                     self.arms.append(_open_arm(channel, calibration))
@@ -377,10 +419,16 @@ class YAMRobot(Robot):
         if self.closed:
             raise RuntimeError('YAM is closed')
         images = {name: camera.read() for name, camera in self.cameras.items()}
+        extra = {}
+        if self.depth_role is not None:
+            # Aligned to the color image just read; sent only to the Policy Server.
+            depth, intrinsics = self.cameras[self.depth_role].read_depth()
+            extra = {f'{self.depth_role}_depth_m': depth,
+                     f'{self.depth_role}_intrinsics': intrinsics}
         left, right = self._read_positions()
         return RobotObservation(images, np.r_[left[:6], right[:6]].astype(np.float32),
                                 np.array([left[6], right[6]], dtype=np.float32),
-                                np.empty(0, dtype=np.float32))  # FK is unavailable, not zero.
+                                np.empty(0, dtype=np.float32), extra)  # FK is unavailable, not zero.
 
     def _validated_action(self, action, *, policy=False):
         value = _vector(action, 14, 'YAM action')

@@ -38,6 +38,9 @@ adapter_config:
   # Return-to-zero arrival tolerance, radians; independent of interpolation step.
   zero_position_tolerance: 0.05
   camera_timeout_ms: 1000
+  # RealSense role whose aligned depth is streamed when a CaP-X model asks for it
+  # (Policy Server capx_camera); only sent to the Policy Server, never recorded.
+  # depth_camera: head_image
 recording: true
 skip_upload: false
 max_trial_steps: 800
