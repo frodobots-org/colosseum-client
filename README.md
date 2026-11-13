@@ -78,8 +78,12 @@ uv pip install --python .venv/bin/python -e '.[gui]'   # once
 
 It defaults to joint control (`configs/robot.yam-joint-llm.yaml`). For EE
 control, pass `--config` and `--server-config`; see
-[EE control](docs/local-evals.md#ee-control-instead-of-joint-control). A
-software STOP is not an emergency stop, so keep the physical stop within reach.
+[EE control](docs/local-evals.md#ee-control-instead-of-joint-control).
+CaP-X models (`<llm>-capx`) need the Policy Server's `capx` extra, a one-time
+SAM3 install, `deadline_ms: 180000` in the Client config, and a head camera
+that does not share a USB 2.0 bus with a wrist camera; see
+[CaP-X models](docs/local-evals.md#cap-x-models).
+A software STOP is not an emergency stop, so keep the physical stop within reach.
 
 ## Reference
 

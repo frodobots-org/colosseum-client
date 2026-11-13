@@ -55,6 +55,8 @@ def make_robot(config: RobotClientConfig, *, action_space: str = "joint_position
                           image_size=(config.image_width, config.image_height))
     if config.robot_type == 'so101' and (control_mode == 'eef_delta_pose' or depth):
         return load_adapter_factory(config.robot_type)(config, control_mode=control_mode, depth=depth)
+    if config.robot_type == 'yam' and depth:
+        return load_adapter_factory(config.robot_type)(config, depth=True)
     if depth:
         raise ValueError(f'{config.robot_type} cannot stream depth to the Policy Server')
     return load_adapter_factory(config.robot_type)(config)

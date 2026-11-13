@@ -77,6 +77,8 @@ the Policy Server's `local-policy-logs/`.
    cd ~/colosseum-policy-server
    uv sync --extra agent
    ```
+   To also run CaP-X models, use `uv sync --extra capx` instead; see
+   [CaP-X models](#cap-x-models).
 2. Set up each VLA's worker environment and checkpoint snapshot. See the Policy
    Server's [YAM guide](https://github.com/frodobots-org/colosseum-policy-server/blob/main/docs/yam.md)
    and [LingBot guide](https://github.com/frodobots-org/colosseum-policy-server/blob/main/docs/lingbot-yam.md).
@@ -246,3 +248,49 @@ the Client converts them to joint commands with IK. VLAs are unchanged.
 EE trials need action execution, so don't pass `--no-execute-action`. For LLM
 EE runs, `action` is the post-IK joint command and `action.eef_target` is the EE
 target.
+
+## CaP-X models
+
+`claude-opus-5-5-capx`, `gpt-6-astra-capx` and `grok-4.7-capx` write Python
+that segments objects with SAM3 and moves both arms through IK. They use the
+same 14-value joint contract as the joint LLMs. The Client streams head-camera
+depth only when the Policy Server asks for it (see
+[YAM depth](yam.md#depth-for-cap-x-models)).
+
+1. Install the `capx` extra in the Policy Server. It brings Inspect Robots and
+   its CaP-X plugin at a pinned commit, and the joint LLM agents and VLAs keep
+   working:
+   ```bash
+   cd ~/colosseum-policy-server
+   uv sync --extra capx
+   ```
+2. Add the `capx` mapping and the three `-capx` model entries from
+   `configs/local-runtime-yam-capx.yaml.example` to
+   `local/local-runtime-yam-agent-joint.yaml`. Set `urdf_path` to
+   `~/colosseum-client/.venv/lib/python3.12/site-packages/i2rt/robot_models/arm/yam/v1/yam.urdf`
+   (absolute path), and check that the model names match the Router's YAM
+   registrations.
+3. Install the SAM3 server once. Run these commands in the Policy Server
+   checkout, not the Client: they use its `servers/sam3` folder. Installing
+   SAM3 and downloading its weights means accepting Meta's SAM License.
+   ```bash
+   cd ~/colosseum-policy-server
+   uv venv servers/sam3/.venv --python 3.10
+   uv pip install --python servers/sam3/.venv/bin/python -e servers/sam3
+   servers/sam3/.venv/bin/python -m sam3_server --port 8114
+   ```
+   The last command downloads `sam3.pt` (3.45 GB) on its first start. Stop it
+   with Ctrl-C once it logs `Uvicorn running`. Keep `sam3_launcher` from the
+   example `capx` mapping: the Policy Server then starts SAM3 at the start of
+   each CaP-X run and stops it afterwards, so the GPU is free for VLA runs.
+4. In the Client config (`configs/robot.yam-joint-llm.yaml`), set
+   `deadline_ms: 180000`. CaP-X may take several LLM turns (30–60 s) before its
+   first move, and the 30000 ms default stops the run first. Other models are
+   not slowed down: this is only the longest wait for one plan.
+5. Check the camera USB layout (see
+   [USB layout for depth](yam.md#usb-layout-for-depth)). The head camera must
+   not share a USB 2.0 bus with a wrist camera.
+
+The Eval Station command does not change. The first step of a CaP-X run waits
+while SAM3 loads. The arms are not collision-checked against each other, so
+keep the emergency stop within reach.
