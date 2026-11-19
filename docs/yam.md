@@ -242,3 +242,47 @@ From the Client checkout, after filling configuration:
 
 `test: true` bypasses the I2RT and camera drivers. With a compatible assignment
 it checks synthetic 12-joint / 2-gripper transport, not physical integration.
+
+## Depth for CaP-X models
+
+A Policy Server CaP-X model registered for YAM, named `<llm>-capx` (for
+example `claude-opus-5-5-capx`; see the Policy Server's
+`docs/inspect-capx.md`), drives both arms with LLM-written code and can ask
+for depth in its ready message. Only then does the Client enable the depth
+stream of one YAM RealSense camera and align it to that camera's color image.
+Each observation then carries two extra state tensors:
+`<role>_depth_m` (480 x 640 float32 metres; 0 means no reading) and
+`<role>_intrinsics` (3 x 3 color intrinsics). Both come from the same frameset
+as the color image in that observation. YAM images are sent at the native
+640 x 480, so the intrinsics are not rescaled. Depth goes only to the Policy
+Server. Recordings, LeRobot exports and dataset uploads never include it.
+
+The camera defaults to `head_image`. Set `adapter_config.depth_camera` to
+`left_image` or `right_image` to use a wrist camera instead. It must match the
+Policy Server's `capx_camera`. A trial that asks for depth fails at start-up
+if that camera returns no depth frame. CaP-X models use the 14-value
+joint-position contract, the same as the YAM joint LLM agents.
+
+### USB layout for depth
+
+Color and depth from the depth camera, plus color from another camera, are
+more than one USB 2.0 bus (480 Mbit/s, shared by every port and hub behind it)
+can carry. When the depth camera shares a USB 2.0 bus with a wrist camera, the
+wrist camera gets no frames, and robot start-up fails with `Frame didn't
+arrive within …`. This only happens in CaP-X trials, because no other trial
+turns depth on. On one rig, the head D435 and a wrist D405 were on the same
+USB 2.0 hub. Alone on that bus, the D435 streamed color and depth at 30 fps.
+
+Check where each camera is connected:
+
+```bash
+.venv/bin/python -c "
+import re, pyrealsense2 as rs
+for d in rs.context().query_devices():
+    print(d.get_info(rs.camera_info.serial_number), d.get_info(rs.camera_info.name), 'USB', d.get_info(rs.camera_info.usb_type_descriptor), 'bus', re.search(r'/usb(\d+)/', d.get_info(rs.camera_info.physical_port)).group(1))"
+```
+
+The depth camera's line must show USB 3.x, or a bus number that no other
+camera shows. Black USB 2.0 ports and USB 2.0 hubs often share one bus. If the
+depth camera keeps landing on a shared bus, move a wrist camera instead: the
+two wrist cameras send color only and fit on one USB 2.0 bus together.
