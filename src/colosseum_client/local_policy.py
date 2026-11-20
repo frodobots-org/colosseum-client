@@ -40,8 +40,10 @@ async def capabilities(url):
 
 
 class LocalPolicyClient(ColosseumClient):
-    def __init__(self, config, api_base, **kwargs):
+    def __init__(self, config, api_base, *, navigation=None, **kwargs):
         super().__init__(config.policy_server_url, '', '', **kwargs)
+        # Earth Rover time limits from the assignment, for LLM agents that pace themselves.
+        self.navigation = dict(navigation) if navigation else None
         parts = urlsplit(api_base)
         self.control_base = urlunsplit(('wss' if parts.scheme == 'https' else 'ws', parts.netloc,
                                        parts.path.rstrip('/'), '', ''))
@@ -102,7 +104,8 @@ class LocalPolicyClient(ColosseumClient):
             local_preparation({**preparation, 'robot_type': self.hardware_robot_type},
                               self.llm_api_keys, self.router_url,
                               account_logins=self.llm_account_logins,
-                              use_local_action_contract=self.use_local_action_contract)))
+                              use_local_action_contract=self.use_local_action_contract,
+                              navigation=self.navigation)))
         async with timeout(self.prepare_timeout):
             while True:
                 ready = await receive_control(self.connection, self.prepare_timeout)
@@ -144,6 +147,9 @@ class LocalPolicyClient(ColosseumClient):
                 if mode == 'eef_abs_pose' and self.use_local_action_contract:
                     # YAM EE: the effective model in ready.message carries the action space.
                     expected_mode = mode
+                if self.model.get('action_space') == 'base_velocity':
+                    # Mobile base (Earth Rover): every model sends the velocities themselves.
+                    expected_mode = 'base_velocity'
                 expected_dim = (7 if expected_mode == 'eef_delta_pose' else self.model['action_dim'])
                 if mode != expected_mode or internal_dim != expected_dim:
                     raise ProtocolError('Local control mode or internal action dimension differs from Client config')

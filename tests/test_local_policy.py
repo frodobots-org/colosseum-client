@@ -135,6 +135,62 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, p
         await asyncio.gather(c.receiver_task,c.reporting_task,c.heartbeat_task,return_exceptions=True)
 
 
+@pytest.mark.parametrize('mode,accepted', [('base_velocity', True), ('joint_pos', False)])
+async def test_rover_models_run_in_base_velocity_mode(monkeypatch, mode, accepted):
+    from colosseum_client.local_protocol import encode_control, decode_control
+    from colosseum_client import local_policy
+    cfg = RobotClientConfig(url='ws://router', token='secret', cameras={'front_image': 'front'},
+        robot_type='earth_rover_mini_plus', control_hz=10,
+        llm_api_keys={'anthropic': 'key'}, policy_server_url='ws://127.0.0.1:8000')
+    c = LocalPolicyClient(cfg, 'http://router', robot_type='earth_rover_mini_plus', joint_count=0,
+                          has_gripper=False, control_hz=10, action_spaces={'base_velocity': 2},
+                          navigation={'timeout_s': 600, 'stopped_s': 2})
+    model = dict(model_type='llm', name='claude-fable-5-2', url='https://api.anthropic.com/v1',
+                 revision='rover-v1', action_space='base_velocity', action_dim=2, control_hz=10, max_horizon=30)
+    preparation = dict(type='prepare', protocol_version=1, run_id='run', preparation_id='p', model=model,
+                       test=False, task={'instruction': 'Drive to the second checkpoint', 'max_steps': 6000})
+    sent = []
+
+    class Router:
+        first = True
+        async def recv(self):
+            if self.first:
+                self.first = False
+                return encode_control(preparation)
+            await asyncio.Event().wait()
+        async def send(self, raw):
+            pass
+
+    class Policy:
+        async def recv(self):
+            return encode_control({**preparation, 'type': 'ready', 'control_mode': mode, 'internal_action_dim': 2})
+        async def send(self, raw):
+            sent.append(decode_control(raw))
+        def __aiter__(self): return self
+        async def __anext__(self):
+            await asyncio.Event().wait()
+
+    connections = iter([Router(), Policy()])
+    async def connect(*args, **kwargs):
+        return next(connections)
+    monkeypatch.setattr(local_policy, 'connect', connect)
+    try:
+        if not accepted:
+            with pytest.raises(ProtocolError, match='control mode'):
+                await asyncio.wait_for(c.connect(evaluation_run='run'), .2)
+            return
+        ready = await asyncio.wait_for(c.connect(evaluation_run='run'), .2)
+        assert ready.action_spaces == ['base_velocity'] and c.native_control_mode == 'base_velocity'
+        # The Policy Server gets the key for this model and the trial's time limit.
+        assert sent[0]['api_key'] == 'key' and sent[0]['robot_type'] == 'earth_rover_mini_plus'
+        assert json.loads(sent[0]['message'])['client_options']['navigation']['timeout_s'] == 600
+    finally:
+        tasks = [task for task in (c.receiver_task, c.reporting_task, c.heartbeat_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def test_so101_llm_uses_router_frequency_and_internal_eef_contract(monkeypatch):
     from colosseum_client.local_protocol import encode_control, decode_control
     from colosseum_client import local_policy
