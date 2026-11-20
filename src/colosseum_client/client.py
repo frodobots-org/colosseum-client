@@ -27,11 +27,17 @@ class ColosseumClient:
         has_gripper: bool = True,
         control_hz: int = 15,
         action_spaces: dict[str, int] | None = None,
+        ping_interval: float = 20,
+        ping_timeout: float = 60,
     ) -> None:
         if not router_url.startswith(("wss://", "ws://")):
             raise ValueError("router_url must use wss:// or ws://")
         if robot_type in {"DROID", "droid"}:
             raise ValueError("Use robot_type: franka; DROID is the driver, not a robot type")
+        if ping_interval <= 0 or ping_timeout <= 0:
+            raise ValueError("ping_interval and ping_timeout must be positive")
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
         self.router_url = router_url
         self.token = token
         self.client_id = client_id
@@ -74,8 +80,9 @@ class ColosseumClient:
             "additional_headers": {"Authorization": f"Bearer {self.token}"},
             "compression": None,
             "max_size": 32 * 1024 * 1024,
-            "ping_interval": 10,
-            "ping_timeout": 10,
+            # A slow uplink delays the pong behind a large observation upload.
+            "ping_interval": self.ping_interval,
+            "ping_timeout": self.ping_timeout,
         }
         if evaluation_run:
             options["additional_headers"]["X-Colosseum-Run"] = evaluation_run
