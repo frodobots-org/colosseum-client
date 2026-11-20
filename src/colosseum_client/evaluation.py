@@ -355,17 +355,20 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
         robot = None
         local_mode = assignment.get('inference_mode', 'remote') == 'local'
         if local_mode:
-            if not config.test and config.robot_type not in {'franka', 'yam', 'so101'}:
-                raise ValueError('Local Policy evaluation currently supports robot_type: franka, yam or so101')
+            if not config.test and config.robot_type not in {'franka', 'yam', 'so101', ROVER_TYPE}:
+                raise ValueError('Local Policy evaluation currently supports robot_type: '
+                                 f'franka, yam, so101 or {ROVER_TYPE}')
             from .local_policy import LocalPolicyClient
             joint_count, action_spaces = {
                 'yam': (12, {'joint_position': 14, 'eef_abs_pose': 14}),
                 'so101': (5, {'joint_position': 6}),
+                ROVER_TYPE: (0, {'base_velocity': 2}),
             }.get(config.robot_type, (7, {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}))
             client = LocalPolicyClient(
                 config, api_url(config), robot_type=config.robot_type,
-                joint_count=joint_count, has_gripper=True, control_hz=config.control_hz,
-                action_spaces=action_spaces,
+                joint_count=joint_count, has_gripper=config.robot_type != ROVER_TYPE,
+                control_hz=config.control_hz, action_spaces=action_spaces,
+                navigation=task.get('navigation') if config.robot_type == ROVER_TYPE else None,
             )
         else:
             robot = await robot_call(robot_factory, config)
@@ -689,6 +692,9 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                             elif config.robot_type == 'so101':
                                 print('SO101 initialization enables motor torque; shutdown returns to the '
                                       'start pose, then releases torque.')
+                            elif config.robot_type == ROVER_TYPE:
+                                print('The rover drives as soon as the policy answers. Keep its path clear; '
+                                      'Ctrl-C (or STOP on the operator page) ends the trial.')
                             else:
                                 print('RobotEnv initialization may reset the robot before any model action.')
                             return yes_no('Confirm this physical trial may initialize the robot and start')

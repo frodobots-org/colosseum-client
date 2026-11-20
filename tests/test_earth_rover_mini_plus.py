@@ -265,6 +265,59 @@ def test_trial_ends_on_done_with_a_confirmed_stop_and_exports(tmp_path, monkeypa
     assert context['goal'] == task['goal'] and 'turns left' in context['state_action_units']
 
 
+def test_local_policy_server_trial_drives_and_ends_on_done(tmp_path, monkeypatch, capsys):
+    """A rover trial whose policy runs on the operator's local Policy Server (cloud LLMs, local VLAs)."""
+    from colosseum_client import local_policy
+
+    class LocalClient(FakeClient):
+        native_control_mode = 'base_velocity'
+        model = {'model_type': 'llm', 'name': 'claude-fable-5-2', 'action_space': 'base_velocity',
+                 'action_dim': 2, 'control_hz': 10, 'max_horizon': 30}
+        built = None
+
+        def __init__(self, config, api_base, **kwargs):
+            super().__init__(done_at=5)
+            type(self).built = (kwargs, self)
+
+        async def connect(self, before_start=None, **kwargs):
+            assert await asyncio.to_thread(before_start, self.model, {}) is True
+            return SimpleNamespace(action_spaces=['base_velocity'])
+
+        async def before_action(self, step):
+            pass
+
+        async def finish(self):
+            self.finished = True
+
+    monkeypatch.setattr(local_policy, 'LocalPolicyClient', LocalClient)
+    created = []
+
+    def factory(config, **options):
+        assert options == {'action_space': 'base_velocity'}
+        created.append(rover.EarthRoverMiniPlusRobot(config))
+        return created[0]
+
+    config = RobotClientConfig(url='ws://localhost', token='t', cameras={'front_image': 'front'},
+                               robot_type=ROVER_TYPE, control_hz=10, image_width=64, image_height=32,
+                               evaluation_dir=str(tmp_path), recording=False,
+                               policy_server_url='ws://127.0.0.1:8000',
+                               adapter_config={'link': 'simulated', 'command_ttl_s': 0.2})
+    task = {'instruction': 'Drive to the pin', 'cameras': ['front_image'], 'max_steps': 500,
+            'goal': {'type': 'gps', 'latitude': 1.5, 'longitude': 103.8},
+            'navigation': {'timeout_s': 300, 'stopped_s': 0.01}}
+    assignment = {'inference_mode': 'local', 'task': task}
+    asyncio.run(e.run_trial(config, assignment, {'id': 'run-1'}, tmp_path / 'run-1', SimpleNamespace(),
+                            robot_factory=factory, confirm_live=lambda model, prepared: True))
+    options, client = LocalClient.built
+    assert options['joint_count'] == 0 and options['has_gripper'] is False
+    assert options['action_spaces'] == {'base_velocity': 2}
+    assert options['navigation'] == task['navigation']
+    assert client.finished and 'declared the task done' in capsys.readouterr().out
+    first = client.observations[0]
+    assert 'navigation_state' in first.state and 'goal_gps' in first.state
+    assert created[0].closed and created[0].link.sent[-1][:2] == (0.0, 0.0)
+
+
 def test_trial_ends_on_the_navigation_timeout(tmp_path, monkeypatch, capsys):
     task = {'instruction': 'Drive', 'cameras': ['front_image'], 'max_steps': 10000,
             'goal': {'type': 'gps', 'latitude': 0.0, 'longitude': 0.0}, 'navigation': {'timeout_s': 0.3, 'stopped_s': 0.01}}

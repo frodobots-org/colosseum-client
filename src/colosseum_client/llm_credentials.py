@@ -37,8 +37,12 @@ def require_secure_policy_url(url):
 
 
 def local_preparation(preparation, keys, policy_url, *, account_logins=None,
-                      use_local_action_contract=False):
-    """Carry only the assigned model's local authentication; preserve Router identity."""
+                      use_local_action_contract=False, navigation=None):
+    """Carry only the assigned model's local authentication; preserve Router identity.
+
+    ``navigation`` (an Earth Rover task's time limits) travels in client_options
+    because the Local Protocol task has no field for it.
+    """
     model = preparation['model']
     if model.get('model_type', 'vla') != 'llm':
         return preparation
@@ -48,6 +52,8 @@ def local_preparation(preparation, keys, policy_url, *, account_logins=None,
                      if model.get('name', '').startswith(prefix)), None)
     logins = account_logins or {}
     options = {'use_local_action_contract': True} if use_local_action_contract else {}
+    if navigation:
+        options['navigation'] = dict(navigation)
     if provider == 'anthropic' and logins.get('anthropic') == 'claude-code':
         options['auth_method'] = 'claude-code'
         return {**preparation, 'message': json.dumps({'client_options': options})}

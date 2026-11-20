@@ -172,3 +172,31 @@ the SDK endpoints from the trial and turns `/checkpoint-reached` into `done`.
 Its `/control` values are SDK commands, so the operator config for such a
 policy keeps `max_linear: 1.0` and `max_angular: 1.0` (the policy applies its
 own speed caps); with lower limits the same values must be passed to the bridge.
+
+## Local Policy Server (cloud LLMs)
+
+Rover trials can also run their policy on the operator's own local Policy
+Server, like YAM, Franka and SO-101. Set `policy_server_url` and the Client asks
+the Router for local assignments; the Router then offers the registered rover
+models whose provider the Client can call. Claude, GPT and Grok drive through
+the Policy Server's rover agent (`colosseum-policy-server/docs/earth-rover-agent.md`):
+each turn the model sees the front camera and the GPS distance and direction to
+the goal, sends one short `drive` command, and the rover stops while it thinks.
+`done` or `give_up` ends the trial with a zero `done` plan; the operator scores it
+as usual.
+
+```yaml
+policy_server_url: ws://127.0.0.1:8000
+deadline_ms: 120000          # one turn can take several LLM calls
+llm_api_keys:
+  openai: env:OPENAI_API_KEY
+  anthropic: env:ANTHROPIC_API_KEY
+# or Claude through the operator's Claude subscription:
+# llm_account_logins: {anthropic: claude-code}
+```
+
+The task's goal reaches the rover adapter from the assignment, and the goal
+GPS or photo reaches the model in every observation. The Client also passes the
+task's `navigation` limits to the Policy Server, so the model knows how much
+time is left. Give LLM tasks a longer `navigation.timeout_s` than continuous
+policies need: stop-and-look turns take several seconds each.
