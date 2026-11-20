@@ -125,11 +125,19 @@ class FrodobotsRoverLink:
         self._open(target)
 
     def end_trial(self):
-        """Shared connection: confirmed stop, release the ride, return to the token-only preview."""
+        """Shared connection: confirmed stop, release the ride, return to the token-only preview.
+
+        With ``keep_ride_after_trial`` the link stays on the ride: the page drives the rover back with its video,
+        and the next trial on the same mission reuses the ride (``start`` returns early). Disconnect ends nothing.
+        """
         confirmed = self.stop(confirm=True)
         if not confirmed:
             raise RuntimeError('Rover stop was not confirmed; the ride is still open. '
                                'Check the rover, then end the ride from the FrodoBots app.')
+        if self.session.mission_slug and self.keep_ride:
+            print('Ride kept open (keep_ride_after_trial): drive the rover back from the page; '
+                  'the next trial reuses the ride.', flush=True)
+            return
         if self.session.mission_slug:
             self.session.end_ride()
             self.started = False
